@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kroger Review Analyzer</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.1.3/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px 0;
+        }
+        .main-container {
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 15px 35px rgba(0,0,0,0.1);
+            padding: 40px;
+            margin: 20px auto;
+            max-width: 600px;
+        }
+        .header-icon {
+            font-size: 3rem;
+            color: #667eea;
+            margin-bottom: 20px;
+        }
+        .form-control:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            padding: 12px 30px;
+            font-weight: 600;
+            transition: transform 0.2s;
+        }
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            background: linear-gradient(135deg, #5a6fd8 0%, #6a4190 100%);
+        }
+        .info-card {
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        .feature-list {
+            list-style: none;
+            padding: 0;
+        }
+        .feature-list li {
+            padding: 8px 0;
+            border-bottom: 1px solid #eee;
+        }
+        .feature-list li:last-child {
+            border-bottom: none;
+        }
+        .feature-list i {
+            color: #667eea;
+            margin-right: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="main-container">
+            <div class="text-center">
+                <i class="fas fa-chart-line header-icon"></i>
+                <h1 class="mb-4">Kroger Review Analyzer</h1>
+                <p class="lead text-muted">Analyze customer reviews and sentiment for Kroger products</p>
+            </div>
+
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                        <div class="alert alert-{{ 'danger' if category == 'error' else 'success' }} alert-dismissible fade show" role="alert">
+                            {{ message }}
+                            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                        </div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+
+            <form method="POST" action="{{ url_for('analyze') }}" class="needs-validation" novalidate>
+                <div class="mb-4">
+                    <label for="category" class="form-label">
+                        <i class="fas fa-search"></i> Search Category
+                    </label>
+                    <input type="text" 
+                           class="form-control form-control-lg" 
+                           id="category" 
+                           name="category" 
+                           placeholder="e.g., cookies, bread, ice cream" 
+                           required>
+                    <div class="form-text">Enter a product category to search for on Kroger.com</div>
+                    <div class="invalid-feedback">
+                        Please enter a search category.
+                    </div>
+                </div>
+
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label for="max_products" class="form-label">
+                            <i class="fas fa-boxes"></i> Max Products
+                        </label>
+                        <input type="number" 
+                               class="form-control" 
+                               id="max_products" 
+                               name="max_products" 
+                               value="5" 
+                               min="1" 
+                               max="20" 
+                               required>
+                        <div class="form-text">1-20 products</div>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label for="max_reviews" class="form-label">
+                            <i class="fas fa-comments"></i> Max Reviews per Product
+                        </label>
+                        <input type="number" 
+                               class="form-control" 
+                               id="max_reviews" 
+                               name="max_reviews" 
+                               value="10" 
+                               min="1" 
+                               max="50" 
+                               required>
+                        <div class="form-text">1-50 reviews</div>
+                    </div>
+                </div>
+
+                <div class="d-grid">
+                    <button type="submit" class="btn btn-primary btn-lg">
+                        <i class="fas fa-rocket"></i> Start Analysis
+                    </button>
+                </div>
+            </form>
+
+            <div class="info-card">
+                <h5><i class="fas fa-info-circle"></i> What You'll Get:</h5>
+                <ul class="feature-list">
+                    <li><i class="fas fa-chart-bar"></i> Product-by-product sentiment analysis</li>
+                    <li><i class="fas fa-star"></i> Average ratings and review breakdowns</li>
+                    <li><i class="fas fa-tags"></i> Common complaints and praises by theme</li>
+                    <li><i class="fas fa-file-excel"></i> Detailed Excel spreadsheet with multiple tabs</li>
+                    <li><i class="fas fa-filter"></i> Filtered meaningful keywords (no stop words)</li>
+                    <li><i class="fas fa-trophy"></i> Top-rated products ranking</li>
+                </ul>
+            </div>
+
+            <div class="text-center mt-4">
+                <small class="text-muted">
+                    <i class="fas fa-clock"></i> Analysis typically takes 2-5 minutes depending on the number of products and reviews.
+                </small>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.1.3/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Bootstrap form validation
+        (function() {
+            'use strict';
+            window.addEventListener('load', function() {
+                var forms = document.getElementsByClassName('needs-validation');
+                var validation = Array.prototype.filter.call(forms, function(form) {
+                    form.addEventListener('submit', function(event) {
+                        if (form.checkValidity() === false) {
+                            event.preventDefault();
+                            event.stopPropagation();
+                        }
+                        form.classList.add('was-validated');
+                    }, false);
+                });
+            }, false);
+        })();
+    </script>
+</body>
+</html>
