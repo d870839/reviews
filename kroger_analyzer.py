@@ -316,8 +316,13 @@ class KrogerReviewAnalyzer:
     def _scrape_reviews_selenium(self, product_url, max_reviews):
         """Scrape reviews using Selenium"""
         try:
+            print(f"Loading product page: {product_url}")
             self.driver.get(product_url)
             time.sleep(3)
+            
+            # Debug page load
+            print(f"Product page title: {self.driver.title}")
+            print(f"Product page URL: {self.driver.current_url}")
             
             review_selectors = [
                 '[data-testid*="review"]',
@@ -328,21 +333,52 @@ class KrogerReviewAnalyzer:
             ]
             
             reviews = []
+            
+            # Check if page contains review-related content
+            page_source = self.driver.page_source
+            print(f"Page contains 'review': {'review' in page_source.lower()}")
+            print(f"Page contains 'rating': {'rating' in page_source.lower()}")
+            print(f"Page contains 'star': {'star' in page_source.lower()}")
+            
             for selector in review_selectors:
                 elements = self._find_elements_safely(selector)
+                print(f"Selector '{selector}' found {len(elements)} elements")
                 
                 for element in elements[:max_reviews]:
                     review_data = self._extract_review_data_selenium(element)
                     if review_data:
+                        print(f"Extracted review: {review_data}")
                         reviews.append(review_data)
+                    else:
+                        print("Failed to extract review data from element")
                 
                 if reviews:
+                    print(f"Found {len(reviews)} reviews with selector: {selector}")
                     break
+                else:
+                    print(f"No reviews found with selector: {selector}")
             
+            # If no reviews found, try broader search
+            if not reviews:
+                print("No reviews found with standard selectors. Checking for any review-like content...")
+                
+                # Look for any elements containing rating or review keywords
+                potential_elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'star') or contains(text(), 'rating') or contains(text(), 'review')]")
+                print(f"Found {len(potential_elements)} elements with review-related text")
+                
+                for elem in potential_elements[:5]:
+                    try:
+                        print(f"Potential review element: {elem.text[:100]}")
+                    except:
+                        pass
+            
+            print(f"Final review count: {len(reviews)}")
             return reviews
             
         except Exception as e:
             print(f"Error scraping reviews from {product_url}: {e}")
+            import traceback
+            traceback.print_exc()
             return []
     
     def _extract_review_data_selenium(self, element):
@@ -635,41 +671,83 @@ class KrogerReviewAnalyzer:
     
     def analyze_category_by_products(self, category, max_products=10, max_reviews_per_product=20):
         """Main method to analyze products individually in a category"""
+        print(f"Starting analyze_category_by_products for '{category}'")
         products = self.search_products(category, max_products)
         
+        print(f"Search returned {len(products) if products else 0} products")
+        if products:
+            for i, product in enumerate(products):
+                print(f"  Product {i+1}: {product['name']} | {product['url']}")
+        
         if not products:
+            print("No products found, returning None")
             return None
         
         product_analyses = []
         all_collected_reviews = set()
         
-        for product in products:
-            reviews = self.scrape_product_reviews(product['url'], max_reviews_per_product)
+        for i, product in enumerate(products):
+            print(f"\nScraping reviews for product {i+1}/{len(products)}: {product['name']}")
+            print(f"Product URL: {product['url']}")
             
-            if reviews:
-                unique_reviews = self._filter_unique_reviews(reviews, product, all_collected_reviews)
+            try:
+                reviews = self.scrape_product_reviews(product['url'], max_reviews_per_product)
+                print(f"Scraped {len(reviews) if reviews else 0} reviews")
                 
-                if unique_reviews:
-                    product_analysis = self.analyze_sentiment(unique_reviews)
-                    if product_analysis and "error" not in product_analysis:
-                        product_analysis['product_name'] = product['name']
-                        product_analysis['product_url'] = product['url']
-                        product_analysis['category'] = category
-                        product_analyses.append(product_analysis)
+                if reviews:
+                    print(f"Sample reviews:")
+                    for j, review in enumerate(reviews[:3]):
+                        if review:
+                            print(f"  Review {j+1}: Rating={review.get('rating', 'N/A')}, Text='{(review.get('text', '') or '')[:50]}...'")
+                
+                if reviews:
+                    unique_reviews = self._filter_unique_reviews(reviews, product, all_collected_reviews)
+                    print(f"After filtering duplicates: {len(unique_reviews)} unique reviews")
+                    
+                    if unique_reviews:
+                        print(f"Analyzing sentiment for {len(unique_reviews)} reviews...")
+                        product_analysis = self.analyze_sentiment(unique_reviews)
+                        print(f"Sentiment analysis result: {product_analysis is not None}")
+                        
+                        if product_analysis and "error" not in product_analysis:
+                            product_analysis['product_name'] = product['name']
+                            product_analysis['product_url'] = product['url']
+                            product_analysis['category'] = category
+                            product_analyses.append(product_analysis)
+                            print(f"Successfully added product analysis. Total so far: {len(product_analyses)}")
+                        else:
+                            print(f"Sentiment analysis failed: {product_analysis}")
+                    else:
+                        print("No unique reviews after filtering")
+                else:
+                    print("No reviews found for this product")
+                    
+            except Exception as e:
+                print(f"Error processing product {product['name']}: {e}")
+                import traceback
+                traceback.print_exc()
             
             time.sleep(1)  # Be respectful to the server
         
+        print(f"\nCompleted analysis. Found {len(product_analyses)} products with valid reviews")
+        
         if not product_analyses:
+            print("No products with valid reviews found, returning None")
             return None
         
+        print("Creating category summary...")
         summary_analysis = self._create_category_summary(product_analyses, category)
+        print(f"Summary created: {summary_analysis is not None}")
         
-        return {
+        result = {
             'category': category,
             'summary': summary_analysis,
             'products': product_analyses,
             'total_products_analyzed': len(product_analyses)
         }
+        
+        print(f"Returning analysis result with {len(product_analyses)} products")
+        return result
     
     def _filter_unique_reviews(self, reviews, product, all_collected_reviews):
         """Filter out duplicate reviews across products"""
