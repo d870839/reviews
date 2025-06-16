@@ -76,8 +76,13 @@ class KrogerReviewAnalyzer:
     def _search_with_selenium(self, search_url, max_products):
         """Search using Selenium for JavaScript-heavy sites"""
         try:
+            print(f"Loading search page: {search_url}")
             self.driver.get(search_url)
-            time.sleep(3)
+            time.sleep(5)  # Increased wait time
+            
+            # Debug: Check page title and URL
+            print(f"Page loaded. Title: {self.driver.title}")
+            print(f"Current URL: {self.driver.current_url}")
             
             product_selectors = [
                 'a[href*="/p/"]',
@@ -91,18 +96,39 @@ class KrogerReviewAnalyzer:
             product_links = []
             seen_urls = set()
             
+            # Debug: Check page source for basic content
+            page_source = self.driver.page_source
+            print(f"Page source length: {len(page_source)}")
+            print(f"Contains 'cookie' text: {'cookie' in page_source.lower()}")
+            print(f"Contains '/p/' links: {'/p/' in page_source}")
+            
+            # Try to find ANY links first
+            all_links = self.driver.find_elements(By.TAG_NAME, 'a')
+            print(f"Total links found on page: {len(all_links)}")
+            
+            # Check for common Kroger page elements
+            kroger_elements = self.driver.find_elements(By.CSS_SELECTOR, '[class*="kroger"], [id*="kroger"]')
+            print(f"Kroger-specific elements found: {len(kroger_elements)}")
+            
             for selector in product_selectors:
                 elements = self._find_elements_safely(selector)
+                print(f"Selector '{selector}' found {len(elements)} elements")
                 
                 for element in elements:
                     href = self._get_element_attribute(element, 'href')
-                    if not href or ('/p/' not in href and 'product' not in href):
+                    if not href:
+                        continue
+                        
+                    print(f"Found link: {href}")
+                    
+                    if '/p/' not in href and 'product' not in href:
                         continue
                         
                     if href in seen_urls:
                         continue
                     
                     product_name = self._extract_product_name(element)
+                    print(f"Extracted product name: '{product_name}'")
                     
                     if self._is_valid_product_name(product_name):
                         product_links.append({
@@ -110,17 +136,37 @@ class KrogerReviewAnalyzer:
                             'url': href
                         })
                         seen_urls.add(href)
+                        print(f"Added valid product: {product_name}")
                         
                         if len(product_links) >= max_products:
                             break
                 
                 if product_links:
+                    print(f"Found {len(product_links)} products with selector: {selector}")
                     break
+                else:
+                    print(f"No valid products found with selector: {selector}")
             
-            return self._deduplicate_products(product_links)
+            # If still no products, try broader search
+            if not product_links:
+                print("No products found with standard selectors. Trying broader search...")
+                
+                # Look for any links containing product-like terms
+                all_links = self.driver.find_elements(By.TAG_NAME, 'a')
+                for link in all_links[:20]:  # Check first 20 links
+                    href = self._get_element_attribute(link, 'href')
+                    text = link.text.strip()
+                    if href and ('product' in href.lower() or '/p/' in href or 'item' in href.lower()):
+                        print(f"Potential product link: {href} | Text: {text[:50]}")
+            
+            result = self._deduplicate_products(product_links)
+            print(f"Final result after deduplication: {len(result)} products")
+            return result
             
         except Exception as e:
             print(f"Error in Selenium search: {e}")
+            import traceback
+            traceback.print_exc()
             return []
     
     def _search_with_requests(self, search_url, max_products):
