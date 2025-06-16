@@ -6,9 +6,15 @@ import time
 from datetime import datetime
 import uuid
 from werkzeug.utils import secure_filename
+import traceback
+import logging
 
 # Import your analyzer class
 from kroger_analyzer import KrogerReviewAnalyzer
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'your-secret-key-here')
@@ -27,27 +33,37 @@ class AnalysisJob:
         self.result_file = None
         self.error_message = None
         self.created_at = datetime.now()
+        logger.info(f"Created job {job_id} for category '{category}'")
         
     def update_status(self, status, progress=None, error=None, result_file=None):
+        logger.info(f"Job {self.job_id}: {status} (progress: {progress}%)")
         self.status = status
         if progress is not None:
             self.progress = progress
         if error:
             self.error_message = error
+            logger.error(f"Job {self.job_id} error: {error}")
         if result_file:
             self.result_file = result_file
 
 def run_analysis(job_id, category, max_products, max_reviews):
     """Run the analysis in a background thread"""
-    job = analysis_jobs[job_id]
+    logger.info(f"Starting analysis thread for job {job_id}")
+    job = analysis_jobs.get(job_id)
+    
+    if not job:
+        logger.error(f"Job {job_id} not found in analysis_jobs")
+        return
     
     try:
         job.update_status('initializing', 5)
         
         # Initialize analyzer
+        logger.info(f"Initializing analyzer for job {job_id}")
         analyzer = KrogerReviewAnalyzer(use_selenium=True, headless=True)
         
         job.update_status('searching', 15)
+        logger.info(f"Starting product search for '{category}'")
         
         # Run analysis
         analysis = analyzer.analyze_category_by_products(
@@ -55,6 +71,8 @@ def run_analysis(job_id, category, max_products, max_reviews):
             max_products=max_products,
             max_reviews_per_product=max_reviews
         )
+        
+        logger.info(f"Analysis completed for job {job_id}. Result: {analysis is not None}")
         
         if not analysis:
             job.update_status('error', error="No products found for this category")
@@ -67,17 +85,26 @@ def run_analysis(job_id, category, max_products, max_reviews):
         filename = f"{category.replace(' ', '_')}_analysis_{job_id[:8]}.xlsx"
         filepath = os.path.join(temp_dir, filename)
         
+        logger.info(f"Exporting to Excel: {filepath}")
+        
         # Export to Excel
         job.update_status('exporting', 85)
-        analyzer.export_products_to_spreadsheet(analysis, filepath)
+        result_file = analyzer.export_products_to_spreadsheet(analysis, filepath)
         
-        job.update_status('completed', 100, result_file=filepath)
+        if result_file and os.path.exists(result_file):
+            job.update_status('completed', 100, result_file=result_file)
+            logger.info(f"Job {job_id} completed successfully. File: {result_file}")
+        else:
+            job.update_status('error', error="Failed to create Excel file")
         
         # Clean up
         del analyzer
         
     except Exception as e:
-        job.update_status('error', error=str(e))
+        error_msg = f"Analysis failed: {str(e)}"
+        logger.error(f"Job {job_id} failed with exception: {error_msg}")
+        logger.error(traceback.format_exc())
+        job.update_status('error', error=error_msg)
 
 @app.route('/')
 def index():
@@ -89,6 +116,8 @@ def analyze():
         category = request.form.get('category', '').strip()
         max_products = int(request.form.get('max_products', 5))
         max_reviews = int(request.form.get('max_reviews', 10))
+        
+        logger.info(f"New analysis request: category='{category}', max_products={max_products}, max_reviews={max_reviews}")
         
         # Validation
         if not category:
@@ -108,52 +137,69 @@ def analyze():
         job = AnalysisJob(job_id, category, max_products, max_reviews)
         analysis_jobs[job_id] = job
         
+        logger.info(f"Created job {job_id}, starting background thread")
+        
         # Start analysis in background thread
         thread = threading.Thread(target=run_analysis, args=(job_id, category, max_products, max_reviews))
         thread.daemon = True
         thread.start()
         
+        logger.info(f"Background thread started for job {job_id}")
+        
         return render_template('progress.html', job_id=job_id, category=category)
         
-    except ValueError:
+    except ValueError as e:
+        logger.error(f"ValueError in analyze: {e}")
         flash('Please enter valid numbers for max products and max reviews', 'error')
         return redirect(url_for('index'))
     except Exception as e:
+        logger.error(f"Exception in analyze: {e}")
+        logger.error(traceback.format_exc())
         flash(f'Error starting analysis: {str(e)}', 'error')
         return redirect(url_for('index'))
 
 @app.route('/status/<job_id>')
 def get_status(job_id):
     """API endpoint to check job status"""
+    logger.info(f"Status check for job {job_id}")
     job = analysis_jobs.get(job_id)
     if not job:
+        logger.warning(f"Job {job_id} not found in analysis_jobs. Available jobs: {list(analysis_jobs.keys())}")
         return jsonify({'error': 'Job not found'}), 404
     
-    return jsonify({
+    response_data = {
         'status': job.status,
         'progress': job.progress,
         'error': job.error_message,
         'category': job.category,
         'has_result': job.result_file is not None
-    })
+    }
+    
+    logger.info(f"Job {job_id} status: {response_data}")
+    return jsonify(response_data)
 
 @app.route('/download/<job_id>')
 def download_result(job_id):
     """Download the analysis result"""
+    logger.info(f"Download request for job {job_id}")
     job = analysis_jobs.get(job_id)
     if not job:
+        logger.warning(f"Download failed: Job {job_id} not found")
         flash('Job not found', 'error')
         return redirect(url_for('index'))
     
     if job.status != 'completed' or not job.result_file:
+        logger.warning(f"Download failed: Job {job_id} not completed or no file. Status: {job.status}, File: {job.result_file}")
         flash('Analysis not completed or file not available', 'error')
         return redirect(url_for('index'))
     
     if not os.path.exists(job.result_file):
+        logger.warning(f"Download failed: File {job.result_file} does not exist")
         flash('Result file not found', 'error')
         return redirect(url_for('index'))
     
     filename = f"{job.category.replace(' ', '_')}_analysis.xlsx"
+    logger.info(f"Sending file {job.result_file} as {filename}")
     
     return send_file(
         job.result_file,
@@ -186,7 +232,23 @@ def cleanup_old_jobs():
     for job_id in jobs_to_remove:
         del analysis_jobs[job_id]
     
+    logger.info(f"Cleaned up {len(jobs_to_remove)} old jobs")
     return f"Cleaned up {len(jobs_to_remove)} old jobs"
+
+@app.route('/debug/jobs')
+def debug_jobs():
+    """Debug endpoint to see all jobs"""
+    jobs_info = {}
+    for job_id, job in analysis_jobs.items():
+        jobs_info[job_id] = {
+            'category': job.category,
+            'status': job.status,
+            'progress': job.progress,
+            'error': job.error_message,
+            'created_at': job.created_at.isoformat(),
+            'has_file': job.result_file is not None
+        }
+    return jsonify(jobs_info)
 
 if __name__ == '__main__':
     # For development
