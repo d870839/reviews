@@ -3,6 +3,7 @@ import os
 import tempfile
 import threading
 import time
+import json
 from datetime import datetime
 import uuid
 from werkzeug.utils import secure_filename
@@ -21,6 +22,8 @@ app.secret_key = os.environ.get('SECRET_KEY', 'your-secret-key-here')
 
 # Store for tracking analysis jobs
 analysis_jobs = {}
+# Store for dashboard data (in production, use a database)
+analysis_results = {}
 
 class AnalysisJob:
     def __init__(self, job_id, category, max_products, max_reviews):
@@ -31,11 +34,12 @@ class AnalysisJob:
         self.status = 'starting'
         self.progress = 0
         self.result_file = None
+        self.analysis_data = None  # Store the raw analysis data
         self.error_message = None
         self.created_at = datetime.now()
         logger.info(f"Created job {job_id} for category '{category}'")
         
-    def update_status(self, status, progress=None, error=None, result_file=None):
+    def update_status(self, status, progress=None, error=None, result_file=None, analysis_data=None):
         logger.info(f"Job {self.job_id}: {status} (progress: {progress}%)")
         self.status = status
         if progress is not None:
@@ -45,6 +49,8 @@ class AnalysisJob:
             logger.error(f"Job {self.job_id} error: {error}")
         if result_file:
             self.result_file = result_file
+        if analysis_data:
+            self.analysis_data = analysis_data
 
 def run_analysis(job_id, category, max_products, max_reviews):
     """Run the analysis in a background thread"""
@@ -80,6 +86,9 @@ def run_analysis(job_id, category, max_products, max_reviews):
             
         job.update_status('analyzing', 70)
         
+        # Store analysis data for dashboard
+        analysis_results[job_id] = analysis
+        
         # Create temporary file for Excel output
         temp_dir = tempfile.mkdtemp()
         filename = f"{category.replace(' ', '_')}_analysis_{job_id[:8]}.xlsx"
@@ -92,7 +101,7 @@ def run_analysis(job_id, category, max_products, max_reviews):
         result_file = analyzer.export_products_to_spreadsheet(analysis, filepath)
         
         if result_file and os.path.exists(result_file):
-            job.update_status('completed', 100, result_file=result_file)
+            job.update_status('completed', 100, result_file=result_file, analysis_data=analysis)
             logger.info(f"Job {job_id} completed successfully. File: {result_file}")
         else:
             job.update_status('error', error="Failed to create Excel file")
@@ -109,6 +118,111 @@ def run_analysis(job_id, category, max_products, max_reviews):
 @app.route('/')
 def index():
     return render_template('index.html')
+
+@app.route('/dashboard')
+def dashboard():
+    """Show the interactive dashboard"""
+    return render_template('dashboard.html')
+
+@app.route('/dashboard/<job_id>')
+def dashboard_with_job(job_id):
+    """Show dashboard for a specific analysis job"""
+    job = analysis_jobs.get(job_id)
+    if not job or job.status != 'completed':
+        flash('Analysis not found or not completed', 'error')
+        return redirect(url_for('index'))
+    
+    return render_template('dashboard.html', job_id=job_id)
+
+@app.route('/api/dashboard-data')
+def get_dashboard_data():
+    """API endpoint to get all dashboard data"""
+    try:
+        # Get all completed analyses
+        all_reviews = []
+        
+        for job_id, analysis_data in analysis_results.items():
+            if analysis_data and 'products' in analysis_data:
+                for product in analysis_data['products']:
+                    # Extract all reviews from sample_reviews
+                    sample_reviews = product.get('sample_reviews', {})
+                    
+                    for sentiment_type in ['positive', 'negative', 'neutral']:
+                        for review in sample_reviews.get(sentiment_type, []):
+                            review_entry = {
+                                'job_id': job_id,
+                                'category': analysis_data.get('category', ''),
+                                'product_name': product.get('product_name', ''),
+                                'product_url': product.get('product_url', ''),
+                                'rating': review.get('rating'),
+                                'text': review.get('text', ''),
+                                'author': review.get('author', ''),
+                                'datetime': review.get('datetime'),
+                                'sentiment_score': _calculate_sentiment_score(sentiment_type),
+                                'sentiment_category': sentiment_type
+                            }
+                            
+                            # Add datetime if missing (use current time as fallback)
+                            if not review_entry['datetime']:
+                                review_entry['datetime'] = datetime.now().isoformat()
+                            
+                            all_reviews.append(review_entry)
+        
+        return jsonify(all_reviews)
+        
+    except Exception as e:
+        logger.error(f"Error getting dashboard data: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/dashboard-data/<job_id>')
+def get_job_dashboard_data(job_id):
+    """API endpoint to get dashboard data for a specific job"""
+    try:
+        analysis_data = analysis_results.get(job_id)
+        if not analysis_data:
+            return jsonify({'error': 'Analysis not found'}), 404
+        
+        reviews = []
+        
+        if 'products' in analysis_data:
+            for product in analysis_data['products']:
+                sample_reviews = product.get('sample_reviews', {})
+                
+                for sentiment_type in ['positive', 'negative', 'neutral']:
+                    for review in sample_reviews.get(sentiment_type, []):
+                        review_entry = {
+                            'job_id': job_id,
+                            'category': analysis_data.get('category', ''),
+                            'product_name': product.get('product_name', ''),
+                            'product_url': product.get('product_url', ''),
+                            'rating': review.get('rating'),
+                            'text': review.get('text', ''),
+                            'author': review.get('author', ''),
+                            'datetime': review.get('datetime'),
+                            'sentiment_score': _calculate_sentiment_score(sentiment_type),
+                            'sentiment_category': sentiment_type
+                        }
+                        
+                        # Add datetime if missing
+                        if not review_entry['datetime']:
+                            review_entry['datetime'] = datetime.now().isoformat()
+                        
+                        reviews.append(review_entry)
+        
+        return jsonify(reviews)
+        
+    except Exception as e:
+        logger.error(f"Error getting job dashboard data: {e}")
+        return jsonify({'error': str(e)}), 500
+
+def _calculate_sentiment_score(sentiment_type):
+    """Convert sentiment category to approximate score"""
+    if sentiment_type == 'positive':
+        return 0.5  # Positive sentiment
+    elif sentiment_type == 'negative':
+        return -0.5  # Negative sentiment
+    else:
+        return 0.0   # Neutral sentiment
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
@@ -172,7 +286,8 @@ def get_status(job_id):
         'progress': job.progress,
         'error': job.error_message,
         'category': job.category,
-        'has_result': job.result_file is not None
+        'has_result': job.result_file is not None,
+        'has_dashboard_data': job.analysis_data is not None
     }
     
     logger.info(f"Job {job_id} status: {response_data}")
@@ -227,6 +342,11 @@ def cleanup_old_jobs():
                         os.rmdir(temp_dir)
                 except:
                     pass
+            
+            # Remove from analysis results too
+            if job_id in analysis_results:
+                del analysis_results[job_id]
+                
             jobs_to_remove.append(job_id)
     
     for job_id in jobs_to_remove:
@@ -246,9 +366,27 @@ def debug_jobs():
             'progress': job.progress,
             'error': job.error_message,
             'created_at': job.created_at.isoformat(),
-            'has_file': job.result_file is not None
+            'has_file': job.result_file is not None,
+            'has_analysis_data': job.analysis_data is not None
         }
     return jsonify(jobs_info)
+
+@app.route('/debug/analysis-results')
+def debug_analysis_results():
+    """Debug endpoint to see stored analysis results"""
+    results_info = {}
+    for job_id, analysis_data in analysis_results.items():
+        if analysis_data:
+            results_info[job_id] = {
+                'category': analysis_data.get('category', ''),
+                'total_products': analysis_data.get('total_products_analyzed', 0),
+                'has_summary': 'summary' in analysis_data,
+                'product_count': len(analysis_data.get('products', []))
+            }
+        else:
+            results_info[job_id] = {'error': 'No analysis data'}
+    
+    return jsonify(results_info)
 
 if __name__ == '__main__':
     # For development

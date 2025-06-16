@@ -6,7 +6,6 @@
     <title>Review Analytics Dashboard</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/wordcloud2.js/1.2.2/wordcloud2.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/date-fns/2.29.3/index.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -46,6 +45,29 @@
         .header p {
             color: #7f8c8d;
             font-size: 1.1rem;
+        }
+
+        .navigation {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .nav-btn {
+            display: inline-block;
+            padding: 10px 20px;
+            margin: 0 10px;
+            background: linear-gradient(135deg, #3498db, #2980b9);
+            color: white;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 600;
+            transition: transform 0.2s;
+        }
+
+        .nav-btn:hover {
+            transform: translateY(-2px);
+            color: white;
+            text-decoration: none;
         }
 
         .stats-grid {
@@ -242,6 +264,15 @@
             <p>Interactive analysis of customer reviews and sentiment trends</p>
         </div>
 
+        <div class="navigation">
+            <a href="/" class="nav-btn">
+                <i class="fas fa-home"></i> Home
+            </a>
+            <a href="/dashboard" class="nav-btn">
+                <i class="fas fa-chart-line"></i> All Data Dashboard
+            </a>
+        </div>
+
         <div id="loading" class="loading">
             <div class="spinner"></div>
             <p>Loading review data...</p>
@@ -335,6 +366,11 @@
         let reviewData = [];
         let charts = {};
         let filteredData = [];
+        
+        // Get job ID from URL if present
+        const urlPath = window.location.pathname;
+        const jobIdMatch = urlPath.match(/\/dashboard\/(.+)$/);
+        const jobId = jobIdMatch ? jobIdMatch[1] : null;
 
         // Initialize dashboard
         document.addEventListener('DOMContentLoaded', function() {
@@ -350,20 +386,31 @@
 
         async function loadReviewData() {
             try {
-                // This would be replaced with actual API call to get review data
-                const response = await fetch('/api/dashboard-data');
+                // Choose endpoint based on whether we have a specific job ID
+                const endpoint = jobId ? `/api/dashboard-data/${jobId}` : '/api/dashboard-data';
+                
+                const response = await fetch(endpoint);
                 if (!response.ok) {
-                    throw new Error('Failed to load review data');
+                    throw new Error(`Failed to load review data: ${response.status}`);
                 }
                 
                 reviewData = await response.json();
+                
+                if (reviewData.error) {
+                    throw new Error(reviewData.error);
+                }
+                
+                if (!Array.isArray(reviewData) || reviewData.length === 0) {
+                    throw new Error('No review data available');
+                }
+                
                 processReviewData();
                 hideLoading();
                 showDashboard();
                 
             } catch (error) {
                 console.error('Error loading data:', error);
-                showError('Failed to load review data. Please try again.');
+                showError(`Failed to load review data: ${error.message}`);
                 hideLoading();
             }
         }
@@ -373,12 +420,21 @@
             reviewData.forEach(review => {
                 if (review.datetime) {
                     review.date = new Date(review.datetime);
+                } else {
+                    // Fallback to current date if no datetime
+                    review.date = new Date();
                 }
-                review.sentimentCategory = getSentimentCategory(review.sentiment_score);
+                
+                // Ensure sentiment category is set
+                if (!review.sentiment_category && review.sentiment_score !== undefined) {
+                    review.sentimentCategory = getSentimentCategory(review.sentiment_score);
+                } else {
+                    review.sentimentCategory = review.sentiment_category || 'neutral';
+                }
             });
 
             // Sort by date
-            reviewData.sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+            reviewData.sort((a, b) => a.date - b.date);
             
             // Initialize filters
             populateProductFilter();
@@ -396,12 +452,15 @@
 
         function populateProductFilter() {
             const productFilter = document.getElementById('productFilter');
-            const products = [...new Set(reviewData.map(r => r.product_name))];
+            const products = [...new Set(reviewData.map(r => r.product_name).filter(Boolean))];
+            
+            // Clear existing options (except "All Products")
+            productFilter.innerHTML = '<option value="all">All Products</option>';
             
             products.forEach(product => {
                 const option = document.createElement('option');
                 option.value = product;
-                option.textContent = product;
+                option.textContent = product.length > 50 ? product.substring(0, 50) + '...' : product;
                 productFilter.appendChild(option);
             });
         }
@@ -444,11 +503,13 @@
 
         function updateStats() {
             const totalReviews = filteredData.length;
-            const avgRating = totalReviews > 0 ? 
-                (filteredData.reduce((sum, r) => sum + (r.rating || 0), 0) / totalReviews).toFixed(1) : 0;
-            const avgSentiment = totalReviews > 0 ?
-                filteredData.reduce((sum, r) => sum + (r.sentiment_score || 0), 0) / totalReviews : 0;
-            const totalProducts = new Set(filteredData.map(r => r.product_name)).size;
+            const reviewsWithRatings = filteredData.filter(r => r.rating && r.rating > 0);
+            const avgRating = reviewsWithRatings.length > 0 ? 
+                (reviewsWithRatings.reduce((sum, r) => sum + r.rating, 0) / reviewsWithRatings.length).toFixed(1) : 0;
+            const reviewsWithSentiment = filteredData.filter(r => r.sentiment_score !== undefined);
+            const avgSentiment = reviewsWithSentiment.length > 0 ?
+                reviewsWithSentiment.reduce((sum, r) => sum + r.sentiment_score, 0) / reviewsWithSentiment.length : 0;
+            const totalProducts = new Set(filteredData.map(r => r.product_name).filter(Boolean)).size;
 
             document.getElementById('totalReviews').textContent = totalReviews;
             document.getElementById('avgRating').textContent = avgRating;
@@ -479,7 +540,7 @@
             }
 
             // Group data by week
-            const weeklyData = groupByWeek(filteredData);
+            const weeklyData = groupByWeek(filteredData.filter(r => r.sentiment_score !== undefined));
             
             charts.sentiment = new Chart(ctx, {
                 type: 'line',
@@ -521,7 +582,7 @@
             }
 
             const ratingCounts = [1, 2, 3, 4, 5].map(rating => 
-                filteredData.filter(r => Math.floor(r.rating || 0) === rating).length
+                filteredData.filter(r => r.rating && Math.floor(r.rating) === rating).length
             );
 
             charts.rating = new Chart(ctx, {
@@ -561,15 +622,23 @@
             const productCounts = {};
             filteredData.forEach(review => {
                 const product = review.product_name;
-                productCounts[product] = (productCounts[product] || 0) + 1;
+                if (product) {
+                    productCounts[product] = (productCounts[product] || 0) + 1;
+                }
             });
 
             const sortedProducts = Object.entries(productCounts)
                 .sort(([,a], [,b]) => b - a)
                 .slice(0, 10);
 
+            if (sortedProducts.length === 0) {
+                // Show empty chart message
+                ctx.fillText('No product data available', 10, 50);
+                return;
+            }
+
             charts.product = new Chart(ctx, {
-                type: 'horizontalBar',
+                type: 'bar',
                 data: {
                     labels: sortedProducts.map(([name]) => name.length > 30 ? name.substring(0, 30) + '...' : name),
                     datasets: [{
@@ -578,6 +647,7 @@
                     }]
                 },
                 options: {
+                    indexAxis: 'y',
                     responsive: true,
                     maintainAspectRatio: false,
                     plugins: {
@@ -621,15 +691,20 @@
         function updateWordCloud() {
             const canvas = document.getElementById('wordcloud');
             const allText = filteredData
-                .filter(r => r.text)
+                .filter(r => r.text && r.text.trim())
                 .map(r => r.text)
                 .join(' ');
+
+            if (!allText.trim()) {
+                canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+                return;
+            }
 
             const words = extractWords(allText);
             const wordList = Object.entries(words)
                 .sort(([,a], [,b]) => b - a)
                 .slice(0, 100)
-                .map(([word, count]) => [word, count * 3]); // Scale for visibility
+                .map(([word, count]) => [word, count * 5]); // Scale for visibility
 
             if (wordList.length > 0) {
                 WordCloud(canvas, {
@@ -658,14 +733,14 @@
                 'when', 'where', 'why', 'how', 'what', 'who', 'which', 'very',
                 'really', 'quite', 'just', 'only', 'also', 'even', 'still', 'more',
                 'most', 'much', 'many', 'some', 'any', 'all', 'not', 'one', 'two',
-                'three', 'four', 'five', 'its', 'it', 'an', 'a'
+                'three', 'four', 'five', 'its', 'it', 'an', 'a', 'good', 'great'
             ]);
 
             const words = {};
             const wordMatches = text.toLowerCase().match(/\b[a-z]{3,}\b/g) || [];
             
             wordMatches.forEach(word => {
-                if (!stopWords.has(word)) {
+                if (!stopWords.has(word) && word.length > 3) {
                     words[word] = (words[word] || 0) + 1;
                 }
             });
@@ -711,12 +786,65 @@
             const productStats = {};
             filteredData.forEach(review => {
                 const product = review.product_name;
+                if (!product) return;
+                
                 if (!productStats[product]) {
                     productStats[product] = {
                         name: product,
                         ratings: [],
-                        sentiments: []
-                    }
+                        sentiments: [],
+                        reviewCount: 0
+                    };
                 }
-            }
-            )}
+                
+                productStats[product].reviewCount++;
+                if (review.rating) {
+                    productStats[product].ratings.push(review.rating);
+                }
+                if (review.sentiment_score !== undefined) {
+                    productStats[product].sentiments.push(review.sentiment_score);
+                }
+            });
+
+            Object.values(productStats).forEach(product => {
+                const card = document.createElement('div');
+                card.className = 'product-card';
+                
+                const avgRating = product.ratings.length > 0 ? 
+                    (product.ratings.reduce((sum, r) => sum + r, 0) / product.ratings.length).toFixed(1) : 'N/A';
+                
+                const avgSentiment = product.sentiments.length > 0 ? 
+                    product.sentiments.reduce((sum, s) => sum + s, 0) / product.sentiments.length : 0;
+                
+                const stars = avgRating !== 'N/A' ? '★'.repeat(Math.round(avgRating)) + '☆'.repeat(5 - Math.round(avgRating)) : 'No ratings';
+                
+                card.innerHTML = `
+                    <h3>${product.name}</h3>
+                    <div class="product-rating">
+                        <span class="stars">${stars}</span>
+                        <span class="rating-number">${avgRating}</span>
+                    </div>
+                    <p><strong>Reviews:</strong> ${product.reviewCount}</p>
+                    <p><strong>Sentiment:</strong> ${getSentimentLabel(avgSentiment)}</p>
+                `;
+                
+                grid.appendChild(card);
+            });
+        }
+
+        function hideLoading() {
+            document.getElementById('loading').style.display = 'none';
+        }
+
+        function showDashboard() {
+            document.getElementById('dashboard-content').style.display = 'block';
+        }
+
+        function showError(message) {
+            const errorElement = document.getElementById('error');
+            errorElement.textContent = message;
+            errorElement.style.display = 'block';
+        }
+    </script>
+</body>
+</html>

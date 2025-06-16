@@ -14,6 +14,7 @@ import tempfile
 import os
 from urllib.parse import urljoin, quote_plus
 import webdriver_manager.chrome as chrome_manager
+from datetime import datetime, timedelta
 
 class KrogerReviewAnalyzer:
     def __init__(self, use_selenium=True, headless=True):
@@ -1140,6 +1141,8 @@ class KrogerReviewAnalyzer:
             print(f"Error writing all reviews: {e}")
     # Enhanced review extraction methods to add to your kroger_analyzer.py
 
+    # Add these methods to your kroger_analyzer.py file
+
     def _extract_review_data_selenium(self, element):
         """Enhanced review data extraction with datetime"""
         try:
@@ -1163,7 +1166,7 @@ class KrogerReviewAnalyzer:
             # Extract datetime - NEW
             datetime_stamp = self._extract_datetime(element)
             if datetime_stamp:
-                review_data['datetime'] = datetime_stamp
+                review_data['datetime'] = datetime_stamp.isoformat()
             
             return review_data if review_data else None
                 
@@ -1174,6 +1177,8 @@ class KrogerReviewAnalyzer:
     def _extract_datetime(self, element):
         """Extract datetime from review element"""
         try:
+            from datetime import datetime
+            
             # Enhanced datetime selectors
             datetime_selectors = [
                 '[data-testid*="date"]',
@@ -1217,98 +1222,75 @@ class KrogerReviewAnalyzer:
             if parsed_date:
                 return parsed_date
             
-            return None
+            # Return current datetime as fallback
+            return datetime.now()
             
         except Exception as e:
             print(f"Error extracting datetime: {e}")
-            return None
+            from datetime import datetime
+            return datetime.now()
 
     def _parse_datetime_string(self, date_string):
-        """Parse various datetime formats"""
         try:
-            from datetime import datetime
-            import re
-            
             if not date_string:
                 return None
             
             # Common date patterns
             date_patterns = [
                 # ISO format
-                r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})',
-                r'(\d{4}-\d{2}-\d{2})',
+                (r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})', '%Y-%m-%dT%H:%M:%S'),
+                (r'(\d{4}-\d{2}-\d{2})', '%Y-%m-%d'),
                 # US format
-                r'(\d{1,2}/\d{1,2}/\d{4})',
-                r'(\d{1,2}-\d{1,2}-\d{4})',
+                (r'(\d{1,2}/\d{1,2}/\d{4})', '%m/%d/%Y'),
+                (r'(\d{1,2}-\d{1,2}-\d{4})', '%m-%d-%Y'),
                 # Month day, year
-                r'([A-Za-z]+ \d{1,2}, \d{4})',
-                # Relative dates
-                r'(\d+) days? ago',
-                r'(\d+) weeks? ago',
-                r'(\d+) months? ago',
-                r'yesterday',
-                r'today'
+                (r'([A-Za-z]+ \d{1,2}, \d{4})', '%B %d, %Y'),
+                (r'([A-Za-z]{3} \d{1,2}, \d{4})', '%b %d, %Y'),
             ]
             
-            for pattern in date_patterns:
+            # Handle relative dates first
+            if 'ago' in date_string.lower():
+                return self._parse_relative_date(date_string)
+            elif 'yesterday' in date_string.lower():
+                return datetime.now() - timedelta(days=1)
+            elif 'today' in date_string.lower():
+                return datetime.now()
+            
+            # Try absolute date patterns
+            for pattern, date_format in date_patterns:
                 matches = re.findall(pattern, date_string, re.IGNORECASE)
                 if matches:
                     date_match = matches[0]
-                    
-                    # Handle relative dates
-                    if 'ago' in date_string.lower():
-                        return self._parse_relative_date(date_string)
-                    elif 'yesterday' in date_string.lower():
-                        from datetime import datetime, timedelta
-                        return datetime.now() - timedelta(days=1)
-                    elif 'today' in date_string.lower():
-                        return datetime.now()
-                    
-                    # Try to parse absolute dates
-                    date_formats = [
-                        '%Y-%m-%dT%H:%M:%S',
-                        '%Y-%m-%d',
-                        '%m/%d/%Y',
-                        '%m-%d-%Y',
-                        '%B %d, %Y',
-                        '%b %d, %Y'
-                    ]
-                    
-                    for date_format in date_formats:
-                        try:
-                            return datetime.strptime(date_match, date_format)
-                        except:
-                            continue
-            
-            return None
-            
-        except Exception as e:
-            print(f"Error parsing datetime string '{date_string}': {e}")
+                    try:
+                        return datetime.strptime(date_match, date_format)
+                    except ValueError:
+                        continue
+        except Exception:
             return None
 
-    def _parse_relative_date(self, date_string):
-        """Parse relative date strings like '5 days ago'"""
-        try:
-            from datetime import datetime, timedelta
-            import re
-            
-            # Extract number and unit
-            match = re.search(r'(\d+)\s+(day|week|month)s?\s+ago', date_string.lower())
-            if not match:
+        def _parse_relative_date(self, date_string):
+            """Parse relative date strings like '5 days ago'"""
+            try:
+                from datetime import datetime, timedelta
+                import re
+                
+                # Extract number and unit
+                match = re.search(r'(\d+)\s+(day|week|month)s?\s+ago', date_string.lower())
+                if not match:
+                    return None
+                
+                number = int(match.group(1))
+                unit = match.group(2)
+                
+                if unit == 'day':
+                    return datetime.now() - timedelta(days=number)
+                elif unit == 'week':
+                    return datetime.now() - timedelta(weeks=number)
+                elif unit == 'month':
+                    return datetime.now() - timedelta(days=number * 30)  # Approximate
+                
                 return None
-            
-            number = int(match.group(1))
-            unit = match.group(2)
-            
-            if unit == 'day':
-                return datetime.now() - timedelta(days=number)
-            elif unit == 'week':
-                return datetime.now() - timedelta(weeks=number)
-            elif unit == 'month':
-                return datetime.now() - timedelta(days=number * 30)  # Approximate
-            
-            return None
-            
-        except Exception as e:
-            print(f"Error parsing relative date: {e}")
-            return None
+                
+            except Exception as e:
+                print(f"Error parsing relative date: {e}")
+                return None
