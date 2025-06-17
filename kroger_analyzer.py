@@ -1,9 +1,8 @@
-# Enhanced version of kroger_analyzer.py for Render deployment
-
 import requests
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
@@ -15,15 +14,8 @@ from collections import Counter
 import tempfile
 import os
 from urllib.parse import urljoin, quote_plus
-import webdriver_manager.chrome as chrome_manager
 from datetime import datetime, timedelta
 import signal
-
-class TimeoutError(Exception):
-    pass
-
-def timeout_handler(signum, frame):
-    raise TimeoutError("Operation timed out")
 
 class KrogerReviewAnalyzer:
     def __init__(self, use_selenium=True, headless=True):
@@ -31,10 +23,9 @@ class KrogerReviewAnalyzer:
         self.headless = headless
         self.session = None
         self.driver = None
-        self.max_selenium_attempts = 2  # Limit Selenium retry attempts
         
         if use_selenium:
-            success = self._setup_selenium()
+            success = self._setup_selenium_docker()
             if not success:
                 print("Selenium setup failed, falling back to requests-only mode")
                 self.use_selenium = False
@@ -42,17 +33,15 @@ class KrogerReviewAnalyzer:
         else:
             self._setup_requests()
     
-    def _setup_selenium(self):
-        """Set up Selenium WebDriver with Chrome - enhanced for Render"""
+    def _setup_selenium_docker(self):
+        """Set up Selenium WebDriver optimized for Docker environment"""
         try:
-            print("Setting up Selenium WebDriver...")
+            print("Setting up Selenium WebDriver for Docker...")
+            
             chrome_options = Options()
             
-            # Essential options for headless Chrome in cloud environments
-            if self.headless:
-                chrome_options.add_argument('--headless=new')  # Use new headless mode
-            
-            # Required for cloud deployment
+            # Docker-optimized Chrome options
+            chrome_options.add_argument('--headless=new')
             chrome_options.add_argument('--no-sandbox')
             chrome_options.add_argument('--disable-dev-shm-usage')
             chrome_options.add_argument('--disable-gpu')
@@ -64,65 +53,38 @@ class KrogerReviewAnalyzer:
             chrome_options.add_argument('--disable-extensions')
             chrome_options.add_argument('--disable-plugins')
             chrome_options.add_argument('--disable-images')  # Speed up loading
-            chrome_options.add_argument('--disable-javascript')  # May help with basic scraping
             chrome_options.add_argument('--window-size=1280,720')
             chrome_options.add_argument('--single-process')
             chrome_options.add_argument('--no-zygote')
             chrome_options.add_argument('--remote-debugging-port=9222')
+            chrome_options.add_argument('--disable-web-security')
+            chrome_options.add_argument('--disable-features=VizDisplayCompositor')
             
-            # Set user agent
+            # User agent
             chrome_options.add_argument('--user-agent=Mozilla/5.0 (Linux; x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
             
+            # Set Chrome binary location (Docker specific)
+            chrome_options.binary_location = "/usr/bin/google-chrome"
+            
+            # Create Chrome service with explicit chromedriver path
+            service = Service(executable_path="/usr/local/bin/chromedriver")
+            
+            # Initialize the driver
+            self.driver = webdriver.Chrome(service=service, options=chrome_options)
+            
             # Set timeouts
-            chrome_options.add_argument('--timeout=30000')
-            chrome_options.add_argument('--page-load-strategy=none')
+            self.driver.set_page_load_timeout(45)
+            self.driver.implicitly_wait(10)
             
-            # Try to initialize Chrome with timeout
-            signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(60)  # 60 second timeout for driver initialization
-            
-            try:
-                # Try with system Chrome first
-                self.driver = webdriver.Chrome(options=chrome_options)
-                signal.alarm(0)  # Cancel timeout
-                print("✓ Selenium WebDriver initialized with system Chrome")
-                
-                # Test the driver with a simple page
-                self.driver.set_page_load_timeout(30)
-                self.driver.implicitly_wait(10)
-                return True
-                
-            except (WebDriverException, TimeoutError) as e:
-                signal.alarm(0)  # Cancel timeout
-                print(f"System Chrome failed: {e}")
-                
-                # Try downloading ChromeDriver
-                print("Attempting to download ChromeDriver...")
-                signal.alarm(60)  # Reset timeout
-                
-                try:
-                    chrome_manager.ChromeDriverManager().install()
-                    self.driver = webdriver.Chrome(options=chrome_options)
-                    signal.alarm(0)  # Cancel timeout
-                    
-                    self.driver.set_page_load_timeout(30)
-                    self.driver.implicitly_wait(10)
-                    print("✓ Selenium WebDriver initialized with downloaded ChromeDriver")
-                    return True
-                    
-                except (WebDriverException, TimeoutError) as e:
-                    signal.alarm(0)  # Cancel timeout
-                    print(f"Downloaded ChromeDriver also failed: {e}")
-                    return False
+            print("✅ Selenium WebDriver initialized successfully in Docker")
+            return True
             
         except Exception as e:
-            print(f"Critical error setting up Selenium: {e}")
-            if hasattr(signal, 'alarm'):
-                signal.alarm(0)  # Cancel any pending timeout
+            print(f"❌ Error setting up Selenium in Docker: {e}")
             return False
     
     def _setup_requests(self):
-        """Set up requests session"""
+        """Set up requests session as fallback"""
         print("Setting up requests session...")
         self.session = requests.Session()
         self.session.headers.update({
@@ -133,9 +95,8 @@ class KrogerReviewAnalyzer:
             'Connection': 'keep-alive',
             'Upgrade-Insecure-Requests': '1'
         })
-        # Set timeouts
         self.session.timeout = 30
-        print("✓ Requests session initialized")
+        print("✅ Requests session initialized")
     
     def __del__(self):
         """Clean up resources"""
@@ -149,38 +110,28 @@ class KrogerReviewAnalyzer:
         """Search for products with timeout protection"""
         search_url = f"https://www.kroger.com/search?query={quote_plus(category)}"
         
-        print(f"Searching for products: {category}")
+        print(f"🔍 Searching for products: {category}")
         print(f"Search URL: {search_url}")
         print(f"Using Selenium: {self.use_selenium}")
         
         try:
-            # Set a timeout for the entire search operation
-            signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(300)  # 5 minute timeout for search
-            
             if self.use_selenium:
                 result = self._search_with_selenium(search_url, max_products)
             else:
                 result = self._search_with_requests(search_url, max_products)
             
-            signal.alarm(0)  # Cancel timeout
             return result
             
-        except TimeoutError:
-            print("❌ Search operation timed out, falling back to requests")
-            signal.alarm(0)
-            
-            # Fallback to requests if Selenium times out
+        except Exception as e:
+            print(f"❌ Search failed: {e}")
+            # Fallback to requests if Selenium fails
             if self.use_selenium:
+                print("Falling back to requests method...")
                 self.use_selenium = False
                 self._setup_requests()
                 return self._search_with_requests(search_url, max_products)
             else:
                 return []
-        except Exception as e:
-            signal.alarm(0)
-            print(f"❌ Search failed: {e}")
-            return []
         
     def _get_product_name_safe(self, element):
         """Safely extract product name from element"""
@@ -205,20 +156,16 @@ class KrogerReviewAnalyzer:
         except:
             return ""
     def _search_with_selenium(self, search_url, max_products):
-        """Search using Selenium with enhanced error handling"""
+        """Enhanced Selenium search for Docker environment"""
         try:
             print(f"Loading search page with Selenium: {search_url}")
             
-            # Set timeouts
-            self.driver.set_page_load_timeout(45)
-            self.driver.implicitly_wait(10)
-            
             # Load page
             self.driver.get(search_url)
-            print(f"✓ Page loaded. Title: {self.driver.title[:50]}...")
+            print(f"✅ Page loaded. Title: {self.driver.title[:50]}...")
             
-            # Wait a moment for dynamic content
-            time.sleep(3)
+            # Wait for content to load
+            time.sleep(5)
             
             # Enhanced product selectors for Kroger
             product_selectors = [
@@ -227,7 +174,8 @@ class KrogerReviewAnalyzer:
                 '.ProductCard a',
                 '.product-card a',
                 'a[href*="product"]',
-                '.product-item a'
+                '.product-item a',
+                '[class*="Product"] a'
             ]
             
             product_links = []
@@ -236,32 +184,35 @@ class KrogerReviewAnalyzer:
             for selector in product_selectors:
                 try:
                     elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                    print(f"Found {len(elements)} elements with selector: {selector}")
+                    print(f"Selector '{selector}' found {len(elements)} elements")
                     
-                    for element in elements[:max_products * 2]:  # Get extra in case some are invalid
+                    for element in elements[:max_products * 3]:  # Get extra in case some are invalid
                         try:
                             href = element.get_attribute('href')
                             if not href or href in seen_urls:
                                 continue
                             
-                            # Basic URL validation
-                            if not any(pattern in href.lower() for pattern in ['/p/', 'product']):
+                            # Enhanced URL validation
+                            if not any(pattern in href.lower() for pattern in ['/p/', 'product', '/item/']):
                                 continue
                             
-                            # Try to get product name
-                            product_name = self._get_product_name_safe(element)
+                            # Get product name
+                            product_name = self._extract_product_name_selenium(element)
                             if not product_name or len(product_name) < 3:
                                 continue
                             
-                            product_links.append({
-                                'name': product_name,
-                                'url': href if href.startswith('http') else f"https://www.kroger.com{href}"
-                            })
-                            seen_urls.add(href)
-                            
-                            if len(product_links) >= max_products:
-                                break
+                            # Filter out navigation/UI elements
+                            if self._is_valid_product_name(product_name):
+                                product_links.append({
+                                    'name': product_name,
+                                    'url': href if href.startswith('http') else f"https://www.kroger.com{href}"
+                                })
+                                seen_urls.add(href)
+                                print(f"✅ Found product: {product_name}")
                                 
+                                if len(product_links) >= max_products:
+                                    break
+                                    
                         except Exception as e:
                             continue
                     
@@ -272,16 +223,12 @@ class KrogerReviewAnalyzer:
                     print(f"Error with selector {selector}: {e}")
                     continue
             
-            print(f"✓ Found {len(product_links)} products")
+            print(f"✅ Found {len(product_links)} products total")
             return self._deduplicate_products(product_links)
             
         except Exception as e:
             print(f"❌ Selenium search failed: {e}")
-            # Try requests as fallback
-            print("Falling back to requests method...")
-            self.use_selenium = False
-            self._setup_requests()
-            return self._search_with_requests(search_url, max_products)
+            return []
     
     def _search_with_requests(self, search_url, max_products):
         """Enhanced requests-based search"""
@@ -291,7 +238,7 @@ class KrogerReviewAnalyzer:
             response = self.session.get(search_url, timeout=30)
             response.raise_for_status()
             
-            print(f"✓ Got response, length: {len(response.text)}")
+            print(f"✅ Got response, length: {len(response.text)}")
             
             # Enhanced regex patterns for product links
             patterns = [
@@ -312,7 +259,7 @@ class KrogerReviewAnalyzer:
                         continue
                     
                     clean_name = re.sub(r'<[^>]+>', '', name).strip()
-                    if len(clean_name) < 3:
+                    if not self._is_valid_product_name(clean_name):
                         continue
                     
                     full_url = urljoin(search_url, href)
@@ -328,7 +275,7 @@ class KrogerReviewAnalyzer:
                 if product_links:
                     break
             
-            print(f"✓ Found {len(product_links)} products with requests")
+            print(f"✅ Found {len(product_links)} products with requests")
             return self._deduplicate_products(product_links)
             
         except Exception as e:
@@ -374,6 +321,95 @@ class KrogerReviewAnalyzer:
             
         except Exception as e:
             return ""
+
+    def _is_meaningful_product_name(self, name):
+        """Check if product name is meaningful"""
+        if not name or len(name) < 3:
+            return False
+        
+        name_lower = name.lower()
+        
+        # Skip common UI elements
+        skip_terms = [
+            'search', 'filter', 'sort', 'view all', 'see more',
+            'next', 'previous', 'page', 'results', 'loading',
+            'menu', 'navigation', 'header', 'footer', 'sign in',
+            'cart', 'account', 'help', 'contact'
+        ]
+        
+        for term in skip_terms:
+            if term in name_lower:
+                return False
+        
+        # Must be long enough or contain product indicators
+        if len(name) > 15:
+            return True
+            
+        product_indicators = [
+            'oz', 'lb', 'pack', 'count', 'size', 'flavor',
+            'brand', 'organic', 'natural', 'fresh', 'frozen'
+        ]
+        
+        return any(indicator in name_lower for indicator in product_indicators)
+    
+    def _is_valid_product_name(self, name):
+        """Enhanced product name validation"""
+        if not name or len(name.strip()) < 3:
+            return False
+        
+        name_lower = name.lower()
+        
+        # Skip common navigation elements
+        skip_terms = [
+            'search', 'filter', 'sort', 'view all', 'see more',
+            'next', 'previous', 'page', 'results', 'loading',
+            'menu', 'navigation', 'header', 'footer'
+        ]
+        
+        for term in skip_terms:
+            if term in name_lower:
+                return False
+        
+        # Must contain some product-like words or be long enough
+        if len(name) > 15:
+            return True
+        
+        product_indicators = [
+            'oz', 'lb', 'pack', 'count', 'size', 'flavor',
+            'brand', 'organic', 'natural', 'fresh'
+        ]
+        
+        return any(indicator in name_lower for indicator in product_indicators)
+
+
+    def _extract_product_name_selenium(self, element):
+        """Enhanced product name extraction for Selenium"""
+        try:
+            # Multiple strategies to get product name
+            name_strategies = [
+                lambda e: e.get_attribute('aria-label'),
+                lambda e: e.get_attribute('title'),
+                lambda e: e.find_element(By.CSS_SELECTOR, '[data-testid*="product-title"], .product-title, h2, h3, h4').text.strip(),
+                lambda e: e.find_element(By.TAG_NAME, 'img').get_attribute('alt') if e.find_elements(By.TAG_NAME, 'img') else None,
+                lambda e: e.text.strip()
+            ]
+            
+            for strategy in name_strategies:
+                try:
+                    name = strategy(element)
+                    if name and len(name.strip()) > 3:
+                        # Clean up the name
+                        clean_name = re.sub(r'\s+', ' ', name.strip())
+                        if self._is_meaningful_product_name(clean_name):
+                            return clean_name
+                except:
+                    continue
+            
+            return ""
+            
+        except Exception as e:
+            return ""
+
     def _extract_simple_review_data(self, element):
         """Extract basic review data"""
         try:
@@ -398,19 +434,14 @@ class KrogerReviewAnalyzer:
         except:
             return None
     def scrape_product_reviews(self, product_url, max_reviews=20):
+        """Enhanced review scraping for Docker environment"""
         try:
-            print(f"Scraping reviews from: {product_url}")
-            
-            # Set timeout for review scraping
-            signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(120)  # 2 minute timeout per product
+            print(f"📝 Scraping reviews from: {product_url}")
             
             if self.use_selenium:
-                reviews = self._scrape_reviews_selenium(product_url, max_reviews)
+                reviews = self._scrape_reviews_selenium_docker(product_url, max_reviews)
             else:
                 reviews = self._scrape_reviews_requests(product_url, max_reviews)
-            
-            signal.alarm(0)  # Cancel timeout
             
             # If no reviews found and using Selenium, try requests
             if not reviews and self.use_selenium:
@@ -419,15 +450,10 @@ class KrogerReviewAnalyzer:
             
             return reviews
             
-        except TimeoutError:
-            print("❌ Review scraping timed out")
-            signal.alarm(0)
-            return []
         except Exception as e:
-            signal.alarm(0)
             print(f"❌ Review scraping failed: {e}")
             return []
-    
+        
     def _scrape_reviews_selenium(self, product_url, max_reviews):
         """Selenium review scraping with enhanced error handling"""
         try:
@@ -464,21 +490,55 @@ class KrogerReviewAnalyzer:
             print(f"Error scraping reviews from {product_url}: {e}")
             return []
     
+    def _scrape_reviews_selenium_docker(self, product_url, max_reviews):
+        try:
+            self.driver.get(product_url)
+            time.sleep(3)
+            
+            # Enhanced review selectors for Kroger
+            review_selectors = [
+                '[data-testid*="review"]',
+                '[data-testid*="Review"]',
+                '.review-item',
+                '.review-card',
+                '.customer-review',
+                '.user-review',
+                '[class*="review"]',
+                '[id*="review"]',
+                '[data-qa*="review"]',
+                '.review-content',
+                '.ReviewItem'
+            ]
+            
+            reviews = []
+            
+            for selector in review_selectors:
+                elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                print(f"Selector '{selector}' found {len(elements)} elements")
+                
+                for element in elements[:max_reviews]:
+                    review_data = self._extract_review_data_docker(element)
+                    if review_data and self._is_valid_review_data(review_data):
+                        reviews.append(review_data)
+                        print(f"✅ Extracted review: {review_data.get('rating', 'N/A')} stars")
+                
+                if reviews:
+                    break
+            
+            return reviews
+            
+        except Exception as e:
+            print(f"❌ Selenium review scraping failed: {e}")
+            return []
+
     def _scrape_reviews_requests(self, product_url, max_reviews):
-        """Simple requests-based review scraping"""
+        """Fallback requests-based review scraping"""
         try:
             response = self.session.get(product_url, timeout=30)
             response.raise_for_status()
             
-            # Generate some mock reviews for testing
-            # In production, you'd implement actual scraping here
-            mock_reviews = [
-                {'rating': 4.0, 'text': 'Good product, would recommend.', 'datetime': datetime.now().isoformat()},
-                {'rating': 5.0, 'text': 'Excellent quality and taste.', 'datetime': (datetime.now() - timedelta(days=1)).isoformat()},
-                {'rating': 3.0, 'text': 'Average product, nothing special.', 'datetime': (datetime.now() - timedelta(days=2)).isoformat()}
-            ]
-            
-            return mock_reviews[:max_reviews]
+            # For now, return empty list - can be enhanced later
+            return []
             
         except Exception as e:
             print(f"Requests review scraping failed: {e}")
@@ -525,7 +585,138 @@ class KrogerReviewAnalyzer:
         except Exception as e:
             print(f"Error parsing review match: {e}")
             return None
+        def _extract_review_data_docker(self, element):
+        """Extract review data optimized for Docker environment"""
+        try:
+            review_data = {}
+            
+            # Extract rating
+            rating = self._extract_rating_docker(element)
+            if rating:
+                review_data['rating'] = rating
+            
+            # Extract review text
+            review_text = self._extract_review_text_docker(element)
+            if review_text:
+                review_data['text'] = review_text
+            
+            # Extract author
+            author = self._extract_author_docker(element)
+            if author:
+                review_data['author'] = author
+            
+            # Add timestamp
+            review_data['datetime'] = datetime.now().isoformat()
+            
+            return review_data if review_data else None
+                
+        except Exception as e:
+            return None
     
+    def _extract_rating_docker(self, element):
+        """Extract rating from review element"""
+        try:
+            # Enhanced rating selectors
+            rating_selectors = [
+                '[data-testid*="rating"]',
+                '[data-testid*="star"]',
+                '.rating',
+                '.stars',
+                '[class*="rating"]',
+                '[class*="star"]',
+                '[aria-label*="star"]',
+                '[aria-label*="rating"]'
+            ]
+            
+            for selector in rating_selectors:
+                try:
+                    rating_elements = element.find_elements(By.CSS_SELECTOR, selector)
+                    for rating_element in rating_elements:
+                        
+                        # Try aria-label first
+                        aria_label = rating_element.get_attribute('aria-label') or ''
+                        rating_match = re.search(r'(\d+(?:\.\d+)?)', aria_label)
+                        if rating_match:
+                            rating = float(rating_match.group(1))
+                            if 1 <= rating <= 5:
+                                return rating
+                        
+                        # Try element text
+                        rating_text = rating_element.text.strip()
+                        rating_match = re.search(r'(\d+(?:\.\d+)?)', rating_text)
+                        if rating_match:
+                            rating = float(rating_match.group(1))
+                            if 1 <= rating <= 5:
+                                return rating
+                                
+                except:
+                    continue
+            
+            return None
+            
+        except Exception as e:
+            return None
+    
+    def _extract_review_text_docker(self, element):
+        """Extract review text from element"""
+        try:
+            # Enhanced text selectors
+            text_selectors = [
+                '[data-testid*="review-text"]',
+                '[data-testid*="review-body"]',
+                '.review-text',
+                '.review-body',
+                '.review-content',
+                'p[class*="review"]',
+                '.user-content'
+            ]
+            
+            for selector in text_selectors:
+                try:
+                    text_elements = element.find_elements(By.CSS_SELECTOR, selector)
+                    for text_element in text_elements:
+                        text = text_element.text.strip()
+                        
+                        if self._is_valid_review_text(text):
+                            return text
+                        
+                except:
+                    continue
+            
+            # Try element text as fallback
+            element_text = element.text.strip()
+            if self._is_valid_review_text(element_text):
+                return element_text
+            
+            return None
+            
+        except Exception as e:
+            return None
+    
+    def _extract_author_docker(self, element):
+        """Extract author from review element"""
+        try:
+            author_selectors = [
+                '[data-testid*="author"]',
+                '.review-author',
+                '.author',
+                '.reviewer',
+                '.customer-name'
+            ]
+            
+            for selector in author_selectors:
+                try:
+                    author_element = element.find_element(By.CSS_SELECTOR, selector)
+                    author = author_element.text.strip()
+                    if author and len(author) > 1:
+                        return author
+                except:
+                    continue
+            
+            return None
+            
+        except Exception as e:
+            return None
     def _extract_review_data_selenium(self, element):
         """Enhanced review data extraction with better text filtering"""
         try:
@@ -765,15 +956,23 @@ class KrogerReviewAnalyzer:
         except Exception as e:
             return None
     
+    def _is_valid_review_text(self, text):
+        """Validate review text"""
+        if not text or len(text) < 10:
+            return False
+        
+        # Check for meaningful content
+        meaningful_words = ['good', 'bad', 'great', 'love', 'hate', 'recommend', 'quality', 'taste', 'delicious']
+        return any(word in text.lower() for word in meaningful_words)
+    
     def _is_valid_review_data(self, review_data):
-        """Enhanced validation for complete review data"""
+        """Validate complete review data"""
         if not review_data:
             return False
         
         has_rating = review_data.get('rating') is not None
         has_text = review_data.get('text') and len(review_data.get('text', '')) > 5
         
-        # Accept if we have either a valid rating or valid text
         return has_rating or has_text
     
     def _find_elements_safely(self, selector):
@@ -848,34 +1047,23 @@ class KrogerReviewAnalyzer:
         return any(term in author_lower for term in junk_terms)
     
     def _filter_unique_reviews(self, reviews, product, all_collected_reviews):
-        """Enhanced duplicate filtering"""
+        """Filter out duplicate reviews"""
         unique_reviews = []
         
-        for i, review in enumerate(reviews):
+        for review in reviews:
             if not review:
                 continue
                 
-            # Create enhanced signature
-            rating = review.get('rating', 'no_rating')
+            # Create signature
             text = review.get('text', '').strip()
-            author = review.get('author', 'anonymous')
+            rating = review.get('rating', 'no_rating')
             
-            # Create signature based on available data
             if text and len(text) > 10:
-                # Use first 50 chars of text for signature
-                text_signature = re.sub(r'\s+', ' ', text[:50].lower())
-                signature = f"{rating}_{text_signature}"
+                signature = f"{rating}_{text[:30].lower()}"
             else:
-                # For rating-only reviews
-                signature = f"{rating}_{author}_{product['name'][:20]}"
+                signature = f"{rating}_{review.get('author', 'anon')}"
             
-            if signature in all_collected_reviews:
-                continue
-            
-            # Enhanced validation
-            is_valid = self._is_valid_review_data(review)
-            
-            if is_valid:
+            if signature not in all_collected_reviews:
                 all_collected_reviews.add(signature)
                 unique_reviews.append(review)
         
@@ -883,66 +1071,61 @@ class KrogerReviewAnalyzer:
     
 
     def analyze_category_by_products(self, category, max_products=10, max_reviews_per_product=20):
-        try:
-            print(f"🚀 Starting analysis for '{category}'")
-            
-            # Search for products with timeout
-            products = self.search_products(category, max_products)
-            
-            if not products:
-                print("❌ No products found")
-                return None
-            
-            print(f"✅ Found {len(products)} products")
-            
-            product_analyses = []
-            all_collected_reviews = set()
-            
-            for i, product in enumerate(products):
-                print(f"\n📊 Processing product {i+1}/{len(products)}: {product['name']}")
-                
-                try:
-                    reviews = self.scrape_product_reviews(product['url'], max_reviews_per_product)
-                    
-                    if reviews:
-                        unique_reviews = self._filter_unique_reviews(reviews, product, all_collected_reviews)
-                        
-                        if unique_reviews:
-                            product_analysis = self.analyze_sentiment(unique_reviews)
-                            
-                            if product_analysis and "error" not in product_analysis:
-                                product_analysis['product_name'] = product['name']
-                                product_analysis['product_url'] = product['url']
-                                product_analysis['category'] = category
-                                product_analyses.append(product_analysis)
-                                print(f"✅ Added analysis for {product['name']}")
-                
-                except Exception as e:
-                    print(f"❌ Error processing {product['name']}: {e}")
-                    continue
-                
-                # Brief pause between products
-                time.sleep(0.5)
-            
-            if not product_analyses:
-                print("❌ No valid product analyses generated")
-                return None
-            
-            print(f"✅ Analysis complete: {len(product_analyses)} products processed")
-            
-            # Create summary
-            summary_analysis = self._create_category_summary(product_analyses, category)
-            
-            return {
-                'category': category,
-                'summary': summary_analysis,
-                'products': product_analyses,
-                'total_products_analyzed': len(product_analyses)
-            }
-            
-        except Exception as e:
-            print(f"❌ Critical error in analysis: {e}")
+        """Main analysis method optimized for Docker"""
+        print(f"🚀 Starting Docker-optimized analysis for '{category}'")
+        
+        products = self.search_products(category, max_products)
+        
+        if not products:
+            print("❌ No products found")
             return None
+        
+        print(f"✅ Found {len(products)} products")
+        
+        product_analyses = []
+        all_collected_reviews = set()
+        
+        for i, product in enumerate(products):
+            print(f"📊 Processing product {i+1}/{len(products)}: {product['name']}")
+            
+            try:
+                reviews = self.scrape_product_reviews(product['url'], max_reviews_per_product)
+                
+                if reviews:
+                    unique_reviews = self._filter_unique_reviews(reviews, product, all_collected_reviews)
+                    
+                    if unique_reviews:
+                        product_analysis = self.analyze_sentiment(unique_reviews)
+                        
+                        if product_analysis and "error" not in product_analysis:
+                            product_analysis['product_name'] = product['name']
+                            product_analysis['product_url'] = product['url']
+                            product_analysis['category'] = category
+                            product_analyses.append(product_analysis)
+                            print(f"✅ Added analysis for {product['name']}")
+            
+            except Exception as e:
+                print(f"❌ Error processing {product['name']}: {e}")
+                continue
+            
+            # Brief pause between products
+            time.sleep(0.5)
+        
+        if not product_analyses:
+            print("❌ No valid product analyses generated")
+            return None
+        
+        print(f"✅ Analysis complete: {len(product_analyses)} products processed")
+        
+        # Create summary (implement the same methods from your original analyzer)
+        summary_analysis = self._create_category_summary(product_analyses, category)
+        
+        return {
+            'category': category,
+            'summary': summary_analysis,
+            'products': product_analyses,
+            'total_products_analyzed': len(product_analyses)
+        }
     
     def analyze_sentiment(self, reviews):
         """Analyze sentiment of reviews"""
@@ -1410,29 +1593,29 @@ class KrogerReviewAnalyzer:
         except Exception:
             return None
 
-        def _parse_relative_date(self, date_string):
-            """Parse relative date strings like '5 days ago'"""
-            try:
-                from datetime import datetime, timedelta
-                import re
-                
-                # Extract number and unit
-                match = re.search(r'(\d+)\s+(day|week|month)s?\s+ago', date_string.lower())
-                if not match:
-                    return None
-                
-                number = int(match.group(1))
-                unit = match.group(2)
-                
-                if unit == 'day':
-                    return datetime.now() - timedelta(days=number)
-                elif unit == 'week':
-                    return datetime.now() - timedelta(weeks=number)
-                elif unit == 'month':
-                    return datetime.now() - timedelta(days=number * 30)  # Approximate
-                
+    def _parse_relative_date(self, date_string):
+        """Parse relative date strings like '5 days ago'"""
+        try:
+            from datetime import datetime, timedelta
+            import re
+            
+            # Extract number and unit
+            match = re.search(r'(\d+)\s+(day|week|month)s?\s+ago', date_string.lower())
+            if not match:
                 return None
-                
-            except Exception as e:
-                print(f"Error parsing relative date: {e}")
-                return None
+            
+            number = int(match.group(1))
+            unit = match.group(2)
+            
+            if unit == 'day':
+                return datetime.now() - timedelta(days=number)
+            elif unit == 'week':
+                return datetime.now() - timedelta(weeks=number)
+            elif unit == 'month':
+                return datetime.now() - timedelta(days=number * 30)  # Approximate
+            
+            return None
+            
+        except Exception as e:
+            print(f"Error parsing relative date: {e}")
+            return None
