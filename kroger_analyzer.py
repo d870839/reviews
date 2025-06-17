@@ -585,8 +585,9 @@ class KrogerReviewAnalyzer:
         except Exception as e:
             print(f"Error parsing review match: {e}")
             return None
-        def _extract_review_data_docker(self, element):
-        """Extract review data optimized for Docker environment"""
+        
+    def _extract_review_data_docker(self, element):
+
         try:
             review_data = {}
             
