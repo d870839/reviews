@@ -9,7 +9,6 @@ import uuid
 from werkzeug.utils import secure_filename
 import traceback
 import logging
-import signal
 
 # Import your analyzer class
 from kroger_analyzer import KrogerReviewAnalyzer
@@ -38,7 +37,7 @@ class AnalysisJob:
         self.analysis_data = None
         self.error_message = None
         self.created_at = datetime.now()
-        self.thread = None  # Track the thread
+        self.thread = None
         logger.info(f"Created job {job_id} for category '{category}'")
         
     def update_status(self, status, progress=None, error=None, result_file=None, analysis_data=None):
@@ -54,32 +53,8 @@ class AnalysisJob:
         if analysis_data:
             self.analysis_data = analysis_data
 
-def run_analysis_with_timeout(job_id, category, max_products, max_reviews):
-    """Run analysis with timeout protection"""
-    def timeout_handler(signum, frame):
-        logger.error(f"Job {job_id} timed out after 15 minutes")
-        job = analysis_jobs.get(job_id)
-        if job:
-            job.update_status('error', error="Analysis timed out. This may be due to website blocking or server limitations.")
-        raise TimeoutError("Analysis timed out")
-    
-    # Set 15-minute timeout for entire analysis
-    if hasattr(signal, 'SIGALRM'):
-        signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(900)  # 15 minutes
-    
-    try:
-        run_analysis(job_id, category, max_products, max_reviews)
-    except TimeoutError:
-        logger.error(f"Job {job_id} exceeded timeout")
-    except Exception as e:
-        logger.error(f"Job {job_id} failed: {e}")
-    finally:
-        if hasattr(signal, 'SIGALRM'):
-            signal.alarm(0)  # Cancel timeout
-
 def run_analysis(job_id, category, max_products, max_reviews):
-    """Run the analysis in a background thread"""
+    """Run the analysis in a background thread with timeout tracking"""
     logger.info(f"Starting analysis thread for job {job_id}")
     job = analysis_jobs.get(job_id)
     
@@ -87,19 +62,31 @@ def run_analysis(job_id, category, max_products, max_reviews):
         logger.error(f"Job {job_id} not found in analysis_jobs")
         return
     
+    start_time = time.time()
+    max_duration = 900  # 15 minutes timeout
+    
     try:
         job.update_status('initializing', 5)
+        
+        # Check timeout
+        if time.time() - start_time > max_duration:
+            job.update_status('error', error="Analysis timed out during initialization")
+            return
         
         # Initialize analyzer with fallback strategy
         logger.info(f"Initializing analyzer for job {job_id}")
         
-        # Try Selenium first, but with timeout protection
         try:
             analyzer = KrogerReviewAnalyzer(use_selenium=True, headless=True)
             logger.info("✅ Analyzer initialized with Selenium")
         except Exception as e:
             logger.warning(f"Selenium failed, using requests-only mode: {e}")
             analyzer = KrogerReviewAnalyzer(use_selenium=False, headless=True)
+        
+        # Check timeout
+        if time.time() - start_time > max_duration:
+            job.update_status('error', error="Analysis timed out during analyzer setup")
+            return
         
         job.update_status('searching', 15)
         logger.info(f"Starting product search for '{category}'")
@@ -111,6 +98,11 @@ def run_analysis(job_id, category, max_products, max_reviews):
                 max_products=max_products,
                 max_reviews_per_product=max_reviews
             )
+            
+            # Check timeout after analysis
+            if time.time() - start_time > max_duration:
+                job.update_status('error', error="Analysis timed out during execution")
+                return
             
             logger.info(f"Analysis completed for job {job_id}. Result: {analysis is not None}")
             
@@ -144,7 +136,8 @@ def run_analysis(job_id, category, max_products, max_reviews):
                 job.update_status('completed', 100, result_file=result_file, analysis_data=analysis)
                 logger.info(f"Job {job_id} completed successfully. File: {result_file}")
             else:
-                job.update_status('error', error="Failed to create Excel file")
+                job.update_status('completed', 100, analysis_data=analysis)
+                logger.info(f"Job {job_id} completed (analysis only, Excel export failed)")
         except Exception as e:
             logger.error(f"Excel export failed: {e}")
             # Still mark as completed if we have analysis data
@@ -306,8 +299,8 @@ def analyze():
         
         logger.info(f"Created job {job_id}, starting background thread")
         
-        # Start analysis in background thread with timeout protection
-        thread = threading.Thread(target=run_analysis_with_timeout, args=(job_id, category, max_products, max_reviews))
+        # Start analysis in background thread (without signal handling)
+        thread = threading.Thread(target=run_analysis, args=(job_id, category, max_products, max_reviews))
         thread.daemon = True
         thread.start()
         job.thread = thread
@@ -337,9 +330,9 @@ def get_status(job_id):
     
     # Check if job has been running too long without progress
     time_running = (datetime.now() - job.created_at).total_seconds()
-    if time_running > 900 and job.status in ['searching', 'initializing']:  # 15 minutes
+    if time_running > 900 and job.status in ['starting', 'initializing', 'searching']:  # 15 minutes
         logger.warning(f"Job {job_id} appears stuck, marking as error")
-        job.update_status('error', error="Analysis timed out. The website may be blocking automated requests.")
+        job.update_status('error', error="Analysis timed out. The website may be blocking automated requests or there may be a technical issue.")
     
     response_data = {
         'status': job.status,
@@ -489,6 +482,8 @@ def test_analyzer():
         return jsonify({
             'requests_analyzer': 'working',
             'selenium_analyzer': 'working' if selenium_working else 'failed',
+            'chrome_available': os.path.exists('/usr/bin/google-chrome'),
+            'chromedriver_available': os.path.exists('/usr/local/bin/chromedriver'),
             'timestamp': datetime.now().isoformat()
         })
         
@@ -498,6 +493,6 @@ def test_analyzer():
 
 if __name__ == '__main__':
     # Get port from environment variable or default to 5000
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 10000))
     # For production deployment
     app.run(debug=False, host='0.0.0.0', port=port)
