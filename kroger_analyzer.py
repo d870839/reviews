@@ -69,15 +69,20 @@ class KrogerReviewAnalyzer:
             # Create Chrome service with explicit chromedriver path
             service = Service(executable_path="/usr/local/bin/chromedriver")
             
-            # Initialize the driver
-            self.driver = webdriver.Chrome(service=service, options=chrome_options)
-            
-            # Set timeouts
-            self.driver.set_page_load_timeout(45)
-            self.driver.implicitly_wait(10)
-            
-            print("✅ Selenium WebDriver initialized successfully in Docker")
-            return True
+            # Initialize the driver with timeout handling
+            try:
+                self.driver = webdriver.Chrome(service=service, options=chrome_options)
+                
+                # Set timeouts
+                self.driver.set_page_load_timeout(45)
+                self.driver.implicitly_wait(10)
+                
+                print("✅ Selenium WebDriver initialized successfully in Docker")
+                return True
+                
+            except Exception as e:
+                print(f"❌ Chrome driver initialization failed: {e}")
+                return False
             
         except Exception as e:
             print(f"❌ Error setting up Selenium in Docker: {e}")
@@ -107,18 +112,21 @@ class KrogerReviewAnalyzer:
                 pass
     
     def search_products(self, category, max_products=10):
-        """Search for products with timeout protection"""
+        """Search for products with simple timeout tracking"""
         search_url = f"https://www.kroger.com/search?query={quote_plus(category)}"
         
         print(f"🔍 Searching for products: {category}")
         print(f"Search URL: {search_url}")
         print(f"Using Selenium: {self.use_selenium}")
         
+        start_time = time.time()
+        max_search_time = 300  # 5 minutes
+        
         try:
             if self.use_selenium:
-                result = self._search_with_selenium(search_url, max_products)
+                result = self._search_with_selenium(search_url, max_products, start_time, max_search_time)
             else:
-                result = self._search_with_requests(search_url, max_products)
+                result = self._search_with_requests(search_url, max_products, start_time, max_search_time)
             
             return result
             
@@ -129,7 +137,7 @@ class KrogerReviewAnalyzer:
                 print("Falling back to requests method...")
                 self.use_selenium = False
                 self._setup_requests()
-                return self._search_with_requests(search_url, max_products)
+                return self._search_with_requests(search_url, max_products, start_time, max_search_time)
             else:
                 return []
         
@@ -155,10 +163,15 @@ class KrogerReviewAnalyzer:
             return ""
         except:
             return ""
-    def _search_with_selenium(self, search_url, max_products):
+    def _search_with_selenium(self, search_url, max_products, start_time, max_time):
         """Enhanced Selenium search for Docker environment"""
         try:
             print(f"Loading search page with Selenium: {search_url}")
+            
+            # Check timeout
+            if time.time() - start_time > max_time:
+                print("❌ Search timed out")
+                return []
             
             # Load page
             self.driver.get(search_url)
@@ -166,6 +179,11 @@ class KrogerReviewAnalyzer:
             
             # Wait for content to load
             time.sleep(5)
+            
+            # Check timeout again
+            if time.time() - start_time > max_time:
+                print("❌ Search timed out after page load")
+                return []
             
             # Enhanced product selectors for Kroger
             product_selectors = [
@@ -182,6 +200,11 @@ class KrogerReviewAnalyzer:
             seen_urls = set()
             
             for selector in product_selectors:
+                # Check timeout in loop
+                if time.time() - start_time > max_time:
+                    print("❌ Search timed out during product extraction")
+                    break
+                
                 try:
                     elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
                     print(f"Selector '{selector}' found {len(elements)} elements")
@@ -230,10 +253,15 @@ class KrogerReviewAnalyzer:
             print(f"❌ Selenium search failed: {e}")
             return []
     
-    def _search_with_requests(self, search_url, max_products):
+    def _search_with_requests(self, search_url, max_products, start_time, max_time):
         """Enhanced requests-based search"""
         try:
             print(f"Loading search page with requests: {search_url}")
+            
+            # Check timeout
+            if time.time() - start_time > max_time:
+                print("❌ Requests search timed out")
+                return []
             
             response = self.session.get(search_url, timeout=30)
             response.raise_for_status()
@@ -251,6 +279,10 @@ class KrogerReviewAnalyzer:
             seen_urls = set()
             
             for pattern in patterns:
+                # Check timeout
+                if time.time() - start_time > max_time:
+                    break
+                
                 matches = re.findall(pattern, response.text, re.DOTALL | re.IGNORECASE)
                 print(f"Pattern found {len(matches)} matches")
                 
@@ -438,8 +470,11 @@ class KrogerReviewAnalyzer:
         try:
             print(f"📝 Scraping reviews from: {product_url}")
             
+            start_time = time.time()
+            max_review_time = 120  # 2 minutes per product
+            
             if self.use_selenium:
-                reviews = self._scrape_reviews_selenium_docker(product_url, max_reviews)
+                reviews = self._scrape_reviews_selenium_docker(product_url, max_reviews, start_time, max_review_time)
             else:
                 reviews = self._scrape_reviews_requests(product_url, max_reviews)
             
@@ -490,8 +525,14 @@ class KrogerReviewAnalyzer:
             print(f"Error scraping reviews from {product_url}: {e}")
             return []
     
-    def _scrape_reviews_selenium_docker(self, product_url, max_reviews):
+    def _scrape_reviews_selenium_docker(self, product_url, max_reviews, start_time, max_time):
+        """Docker-optimized Selenium review scraping"""
         try:
+            # Check timeout
+            if time.time() - start_time > max_time:
+                print("❌ Review scraping timed out before starting")
+                return []
+            
             self.driver.get(product_url)
             time.sleep(3)
             
@@ -513,6 +554,11 @@ class KrogerReviewAnalyzer:
             reviews = []
             
             for selector in review_selectors:
+                # Check timeout in loop
+                if time.time() - start_time > max_time:
+                    print("❌ Review scraping timed out")
+                    break
+                
                 elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
                 print(f"Selector '{selector}' found {len(elements)} elements")
                 
@@ -587,7 +633,7 @@ class KrogerReviewAnalyzer:
             return None
         
     def _extract_review_data_docker(self, element):
-
+        """Extract review data optimized for Docker environment"""
         try:
             review_data = {}
             
@@ -718,6 +764,7 @@ class KrogerReviewAnalyzer:
             
         except Exception as e:
             return None
+        
     def _extract_review_data_selenium(self, element):
         """Enhanced review data extraction with better text filtering"""
         try:
@@ -1118,7 +1165,7 @@ class KrogerReviewAnalyzer:
         
         print(f"✅ Analysis complete: {len(product_analyses)} products processed")
         
-        # Create summary (implement the same methods from your original analyzer)
+        # Create summary
         summary_analysis = self._create_category_summary(product_analyses, category)
         
         return {
@@ -1158,7 +1205,7 @@ class KrogerReviewAnalyzer:
                     'negative_reviews': rating_count if avg_rating <= 2 else 0,
                     'neutral_reviews': rating_count if 2 < avg_rating < 4 else 0,
                     'themes': ['Rating-only reviews'],
-                    'sample_reviews': []
+                    'sample_reviews': {'positive': [], 'negative': [], 'neutral': []}
                 }
             
             # Analyze sentiment for text reviews
@@ -1214,17 +1261,12 @@ class KrogerReviewAnalyzer:
             if not text or len(text) < 20:
                 return []
             
-            # Extract meaningful words
             words = self._extract_meaningful_words(text)
-            
-            # Count word frequency
             word_freq = Counter(words)
-            
-            # Get most common themes
             common_words = word_freq.most_common(10)
             themes = [word for word, count in common_words if count >= 2]
             
-            return themes[:5]  # Return top 5 themes
+            return themes[:5]
             
         except Exception as e:
             print(f"Error extracting themes: {e}")
@@ -1233,10 +1275,8 @@ class KrogerReviewAnalyzer:
     def _extract_meaningful_words(self, text):
         """Extract meaningful words from text"""
         try:
-            # Convert to lowercase and extract words
             words = re.findall(r'\b[a-zA-Z]{3,}\b', text.lower())
             
-            # Filter out stop words and common non-meaningful words
             stop_words = {
                 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with',
                 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had',
@@ -1275,18 +1315,15 @@ class KrogerReviewAnalyzer:
             if not product_analyses:
                 return None
             
-            # Aggregate metrics
             total_reviews = sum(p.get('total_reviews', 0) for p in product_analyses)
             total_text_reviews = sum(p.get('text_reviews', 0) for p in product_analyses)
             avg_rating = sum(p.get('average_rating', 0) for p in product_analyses) / len(product_analyses)
             avg_sentiment = sum(p.get('sentiment_score', 0) for p in product_analyses) / len(product_analyses)
             
-            # Aggregate review counts
             total_positive = sum(p.get('positive_reviews', 0) for p in product_analyses)
             total_negative = sum(p.get('negative_reviews', 0) for p in product_analyses)
             total_neutral = sum(p.get('neutral_reviews', 0) for p in product_analyses)
             
-            # Aggregate themes
             all_themes = []
             for product in product_analyses:
                 themes = product.get('themes', [])
@@ -1295,7 +1332,6 @@ class KrogerReviewAnalyzer:
             theme_counts = Counter(all_themes)
             top_themes = [theme for theme, count in theme_counts.most_common(8)]
             
-            # Find best and worst products
             best_product = max(product_analyses, key=lambda p: p.get('average_rating', 0))
             worst_product = min(product_analyses, key=lambda p: p.get('average_rating', 5))
             
@@ -1338,15 +1374,9 @@ class KrogerReviewAnalyzer:
                 category = analysis_data.get('category', 'analysis')
                 filename = f"{category.replace(' ', '_')}_analysis.xlsx"
             
-            # Create Excel writer
             with pd.ExcelWriter(filename, engine='openpyxl') as writer:
-                # Write category summary
                 self._write_category_summary_sheet(writer, analysis_data)
-                
-                # Write products overview
                 self._write_products_overview_sheet(writer, analysis_data)
-                
-                # Write detailed reviews
                 self._write_all_reviews_sheet(writer, analysis_data)
             
             print(f"Analysis exported to: {filename}")
@@ -1356,34 +1386,37 @@ class KrogerReviewAnalyzer:
             print(f"Error exporting to spreadsheet: {e}")
             return None
     
-    def _write_category_summary_sheet(self, writer, analysis_data):
-        """Write category summary to Excel sheet"""
+    def _write_products_overview_sheet(self, writer, analysis_data):
+        """Write products overview to Excel sheet"""
         try:
-            summary = analysis_data.get('summary', {})
+            products = analysis_data.get('products', [])
             
-            summary_data = [
-                ['Category', analysis_data.get('category', '')],
-                ['Total Products Analyzed', summary.get('total_products', 0)],
-                ['Total Reviews', summary.get('total_reviews', 0)],
-                ['Total Text Reviews', summary.get('total_text_reviews', 0)],
-                ['Average Rating', summary.get('average_rating', 0)],
-                ['Average Sentiment Score', summary.get('average_sentiment', 0)],
-                ['Overall Sentiment', summary.get('sentiment_label', '')],
-                ['Positive Reviews', summary.get('positive_reviews', 0)],
-                ['Neutral Reviews', summary.get('neutral_reviews', 0)],
-                ['Negative Reviews', summary.get('negative_reviews', 0)],
-                ['Top Themes', ', '.join(summary.get('top_themes', []))],
-                ['Best Product', summary.get('best_product', {}).get('name', '')],
-                ['Best Product Rating', summary.get('best_product', {}).get('rating', 0)],
-                ['Worst Product', summary.get('worst_product', {}).get('name', '')],
-                ['Worst Product Rating', summary.get('worst_product', {}).get('rating', 0)]
-            ]
+            products_data = []
+            for product in products:
+                products_data.append([
+                    product.get('product_name', ''),
+                    product.get('average_rating', 0),
+                    product.get('total_reviews', 0),
+                    product.get('text_reviews', 0),
+                    product.get('sentiment_score', 0),
+                    product.get('sentiment_label', ''),
+                    product.get('positive_reviews', 0),
+                    product.get('negative_reviews', 0),
+                    product.get('neutral_reviews', 0),
+                    ', '.join(product.get('themes', [])),
+                    product.get('product_url', '')
+                ])
             
-            df_summary = pd.DataFrame(summary_data, columns=['Metric', 'Value'])
-            df_summary.to_excel(writer, sheet_name='Category Summary', index=False)
+            df_products = pd.DataFrame(products_data, columns=[
+                'Product Name', 'Average Rating', 'Total Reviews', 'Text Reviews',
+                'Sentiment Score', 'Sentiment Label', 'Positive Reviews',
+                'Negative Reviews', 'Neutral Reviews', 'Top Themes', 'Product URL'
+            ])
+            
+            df_products.to_excel(writer, sheet_name='Products Overview', index=False)
             
         except Exception as e:
-            print(f"Error writing category summary: {e}")
+            print(f"Error writing products overview: {e}")
     
     def _write_products_overview_sheet(self, writer, analysis_data):
         """Write products overview to Excel sheet"""
