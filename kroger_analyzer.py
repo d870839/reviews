@@ -17,6 +17,7 @@ import os
 from urllib.parse import urljoin, quote_plus
 from datetime import datetime, timedelta
 import json
+import requests
 
 class KrogerReviewAnalyzer:
     def __init__(self, use_selenium=True, headless=True):
