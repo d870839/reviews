@@ -114,6 +114,12 @@
             padding: 25px;
             border-radius: 15px;
             box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+            height: 400px; /* Fixed height */
+        }
+
+        .chart-container canvas {
+            max-height: 300px !important; /* Limit canvas height */
+            width: 100% !important;
         }
 
         .chart-container h2 {
@@ -121,6 +127,7 @@
             margin-bottom: 20px;
             font-size: 1.3rem;
             font-weight: 600;
+            height: 30px; /* Fixed header height */
         }
 
         .full-width {
