@@ -1,4 +1,3 @@
-import requests
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
@@ -26,6 +25,41 @@ class KrogerReviewAnalyzer:
         self.session = None
         self.driver = None
         
+        # Cincinnati Kroger store information (multiple options)
+        self.cincinnati_stores = {
+            'downtown': {
+                'store_id': '01400513',  # Kroger On the Rhine
+                'zip_code': '45202',
+                'city': 'Cincinnati',
+                'state': 'OH',
+                'name': 'Kroger On the Rhine'
+            },
+            'green_township': {
+                'store_id': '01400444',  # Green Township
+                'zip_code': '45211',
+                'city': 'Cincinnati', 
+                'state': 'OH',
+                'name': 'Green Township'
+            },
+            'university': {
+                'store_id': '01400929',  # University Plaza
+                'zip_code': '45219',
+                'city': 'Cincinnati',
+                'state': 'OH', 
+                'name': 'University Plaza'
+            },
+            'hartwell': {
+                'store_id': '01400405',  # Hartwell
+                'zip_code': '45215',
+                'city': 'Cincinnati',
+                'state': 'OH',
+                'name': 'Hartwell'
+            }
+        }
+        
+        # Default to downtown Cincinnati location
+        self.cincinnati_store = self.cincinnati_stores['downtown']
+        
         # VSCode/Local environment user agents (more diverse)
         self.user_agents = [
             # Windows VSCode typical
@@ -39,13 +73,374 @@ class KrogerReviewAnalyzer:
         ]
         
         if use_selenium:
-            success = self._setup_selenium_like_local()
+            success = self._setup_selenium_with_location()
             if not success:
                 print("Selenium setup failed, falling back to requests-only mode")
                 self.use_selenium = False
-                self._setup_requests_like_local()
+                self._setup_requests_with_location()
         else:
-            self._setup_requests_like_local()
+            self._setup_requests_with_location()
+    
+    def set_cincinnati_store(self, store_name='downtown'):
+        """Set specific Cincinnati store location"""
+        if store_name in self.cincinnati_stores:
+            self.cincinnati_store = self.cincinnati_stores[store_name]
+            print(f"✅ Set Cincinnati store to: {self.cincinnati_store['name']}")
+            return True
+        else:
+            print(f"❌ Unknown store: {store_name}. Available: {list(self.cincinnati_stores.keys())}")
+            return False
+        """Setup Selenium with Cincinnati store location"""
+        try:
+            print("Setting up Selenium with Cincinnati Kroger location...")
+            
+            chrome_options = Options()
+            
+            # Make it look like a real local Chrome instance
+            if self.headless:
+                chrome_options.add_argument('--headless=new')
+            
+            # Core options for Docker compatibility
+            chrome_options.add_argument('--no-sandbox')
+            chrome_options.add_argument('--disable-dev-shm-usage')
+            
+            # CRITICAL: Remove automation indicators
+            chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            chrome_options.add_experimental_option('useAutomationExtension', False)
+            
+            # Mimic real local browser
+            chrome_options.add_argument('--disable-web-security')
+            chrome_options.add_argument('--allow-running-insecure-content')
+            chrome_options.add_argument('--disable-features=TranslateUI,BlinkGenPropertyTrees')
+            chrome_options.add_argument('--disable-ipc-flooding-protection')
+            
+            # Set Cincinnati location in browser (geolocation override)
+            # Cincinnati coordinates: 39.1031, -84.5120
+            chrome_options.add_argument('--enable-features=GeolocationAPI')
+            
+            # Local browser window size
+            chrome_options.add_argument('--window-size=1920,1080')
+            chrome_options.add_argument('--start-maximized')
+            
+            # Real user agent
+            local_ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            chrome_options.add_argument(f'--user-agent={local_ua}')
+            
+            # Mimic local Chrome profile preferences with Cincinnati location
+            prefs = {
+                "profile.default_content_setting_values": {
+                    "notifications": 1,
+                    "popups": 0,
+                    "geolocation": 1,    # Allow location for Cincinnati
+                    "media_stream": 1,
+                },
+                "profile.managed_default_content_settings": {
+                    "images": 1
+                },
+                "intl.accept_languages": "en-US,en",
+                "profile.default_content_settings.popups": 0,
+                "extensions.settings": {},
+                # Set Cincinnati timezone
+                "profile.content_settings.exceptions.automatic_downloads": {
+                    "*,*": {"last_modified": "13000000000000000", "setting": 1}
+                }
+            }
+            chrome_options.add_experimental_option("prefs", prefs)
+            
+            # Additional browser flags
+            chrome_options.add_argument('--disable-background-networking')
+            chrome_options.add_argument('--enable-features=NetworkService,NetworkServiceLogging')
+            chrome_options.add_argument('--disable-background-timer-throttling')
+            chrome_options.add_argument('--disable-renderer-backgrounding')
+            chrome_options.add_argument('--disable-backgrounding-occluded-windows')
+            chrome_options.add_argument('--disable-client-side-phishing-detection')
+            chrome_options.add_argument('--disable-crash-reporter')
+            chrome_options.add_argument('--disable-oopr-debug-crash-dump')
+            chrome_options.add_argument('--no-crash-upload')
+            chrome_options.add_argument('--disable-low-res-tiling')
+            chrome_options.add_argument('--log-level=3')
+            chrome_options.add_argument('--silent')
+            
+            # Set Chrome binary location for Docker
+            chrome_options.binary_location = "/usr/bin/google-chrome"
+            
+            # Create service
+            service = Service(executable_path="/usr/local/bin/chromedriver")
+            
+            # Initialize driver
+            self.driver = webdriver.Chrome(service=service, options=chrome_options)
+            
+            # CRITICAL: Hide webdriver property immediately
+            self.driver.execute_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined,
+                });
+            """)
+            
+            # Set Cincinnati geolocation
+            self.driver.execute_cdp_cmd("Emulation.setGeolocationOverride", {
+                "latitude": 39.1031,
+                "longitude": -84.5120,
+                "accuracy": 100
+            })
+            
+            # Add more realistic navigator properties
+            self.driver.execute_script("""
+                Object.defineProperty(navigator, 'languages', {
+                    get: () => ['en-US', 'en'],
+                });
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [1, 2, 3, 4, 5], // Fake plugins array
+                });
+            """)
+            
+            # Set realistic timeouts
+            self.driver.set_page_load_timeout(90)
+            self.driver.implicitly_wait(20)
+            
+            # Now set the Cincinnati store location
+            success = self._set_cincinnati_store_location()
+            if not success:
+                print("⚠️ Warning: Could not set Cincinnati store location, proceeding anyway")
+            
+            print("✅ Selenium configured with Cincinnati location")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Selenium setup failed: {e}")
+            return False
+    
+    def _set_cincinnati_store_location(self):
+        """Navigate to Kroger and set Cincinnati store location"""
+        try:
+            print("🏪 Setting Cincinnati Kroger store location...")
+            
+            # Go to Kroger homepage first
+            self.driver.get("https://www.kroger.com")
+            time.sleep(5)
+            
+            # Look for store locator or location setter
+            store_selectors = [
+                '[data-testid="store-selector"]',
+                '[data-testid="store-locator"]',
+                '.store-selector',
+                '.store-locator',
+                '[aria-label*="store"]',
+                '[aria-label*="location"]',
+                'button[data-testid*="store"]',
+                'a[href*="store"]',
+                '.header-store-info',
+                '#store-selector'
+            ]
+            
+            store_element = None
+            for selector in store_selectors:
+                try:
+                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    if elements:
+                        store_element = elements[0]
+                        print(f"✅ Found store selector with: {selector}")
+                        break
+                except:
+                    continue
+            
+            if store_element:
+                try:
+                    # Click the store selector
+                    self.driver.execute_script("arguments[0].click();", store_element)
+                    time.sleep(3)
+                    
+                    # Try to enter Cincinnati zip code
+                    zip_selectors = [
+                        'input[placeholder*="zip"]',
+                        'input[placeholder*="ZIP"]',
+                        'input[name*="zip"]',
+                        'input[id*="zip"]',
+                        'input[type="text"]'
+                    ]
+                    
+                    for selector in zip_selectors:
+                        try:
+                            zip_inputs = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                            if zip_inputs:
+                                zip_input = zip_inputs[0]
+                                zip_input.clear()
+                                zip_input.send_keys(self.cincinnati_store['zip_code'])
+                                time.sleep(2)
+                                
+                                # Try to submit or search
+                                zip_input.send_keys('\n')  # Press Enter
+                                time.sleep(5)
+                                
+                                print(f"✅ Entered Cincinnati ZIP: {self.cincinnati_store['zip_code']}")
+                                
+                                # Look for Cincinnati stores and select one
+                                self._select_cincinnati_store()
+                                return True
+                        except:
+                            continue
+                except Exception as e:
+                    print(f"⚠️ Could not interact with store selector: {e}")
+            
+            # Alternative: Try direct URL with location
+            try:
+                print("🔄 Trying alternative method: direct URL with location...")
+                location_url = f"https://www.kroger.com/stores/search?searchText={self.cincinnati_store['zip_code']}"
+                self.driver.get(location_url)
+                time.sleep(5)
+                
+                # Try to select a Cincinnati store
+                self._select_cincinnati_store()
+                return True
+                
+            except Exception as e:
+                print(f"⚠️ Alternative method failed: {e}")
+            
+            # Final attempt: Set cookies/localStorage with Cincinnati location
+            try:
+                print("🔄 Final attempt: Setting location via JavaScript...")
+                
+                # Set location in localStorage (common pattern)
+                location_data = {
+                    'storeId': self.cincinnati_store['store_id'],
+                    'zipCode': self.cincinnati_store['zip_code'],
+                    'city': self.cincinnati_store['city'],
+                    'state': self.cincinnati_store['state']
+                }
+                
+                self.driver.execute_script(f"""
+                    localStorage.setItem('selectedStore', '{json.dumps(location_data)}');
+                    localStorage.setItem('storeId', '{self.cincinnati_store["store_id"]}');
+                    localStorage.setItem('zipCode', '{self.cincinnati_store["zip_code"]}');
+                """)
+                
+                # Also try setting cookies
+                self.driver.add_cookie({
+                    'name': 'storeId',
+                    'value': self.cincinnati_store['store_id'],
+                    'domain': '.kroger.com'
+                })
+                
+                self.driver.add_cookie({
+                    'name': 'zipCode', 
+                    'value': self.cincinnati_store['zip_code'],
+                    'domain': '.kroger.com'
+                })
+                
+                print("✅ Set Cincinnati location via JavaScript")
+                
+                # Refresh to apply location
+                self.driver.refresh()
+                time.sleep(5)
+                
+                return True
+                
+            except Exception as e:
+                print(f"⚠️ JavaScript method failed: {e}")
+                
+            return False
+            
+        except Exception as e:
+            print(f"❌ Failed to set Cincinnati store location: {e}")
+            return False
+    
+    def _select_cincinnati_store(self):
+        """Try to select a specific Cincinnati store from results"""
+        try:
+            print("🏪 Looking for Cincinnati store options...")
+            
+            # Look for store cards or results
+            store_selectors = [
+                '.store-card',
+                '.store-result',
+                '[data-testid*="store"]',
+                '.store-item',
+                '[class*="store"]'
+            ]
+            
+            for selector in store_selectors:
+                try:
+                    stores = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    print(f"Found {len(stores)} potential stores with {selector}")
+                    
+                    for store in stores[:3]:  # Check first 3 stores
+                        store_text = store.text.lower()
+                        if 'cincinnati' in store_text or self.cincinnati_store['zip_code'] in store_text:
+                            try:
+                                # Look for select button within store
+                                select_buttons = store.find_elements(By.CSS_SELECTOR, 
+                                    'button, a[role="button"], [data-testid*="select"]')
+                                
+                                if select_buttons:
+                                    self.driver.execute_script("arguments[0].click();", select_buttons[0])
+                                    time.sleep(3)
+                                    print("✅ Selected Cincinnati store!")
+                                    return True
+                                else:
+                                    # Try clicking the store itself
+                                    self.driver.execute_script("arguments[0].click();", store)
+                                    time.sleep(3)
+                                    print("✅ Clicked Cincinnati store!")
+                                    return True
+                            except:
+                                continue
+                except:
+                    continue
+            
+            # If no specific selection worked, just click the first store
+            try:
+                first_store_button = self.driver.find_elements(By.CSS_SELECTOR, 
+                    'button:contains("Select"), button:contains("Choose"), [data-testid*="select"]')
+                if first_store_button:
+                    self.driver.execute_script("arguments[0].click();", first_store_button[0])
+                    time.sleep(3)
+                    print("✅ Selected first available store")
+                    return True
+            except:
+                pass
+                
+            return False
+            
+        except Exception as e:
+            print(f"⚠️ Store selection failed: {e}")
+            return False
+    
+    def _setup_requests_with_location(self):
+        """Setup requests session with Cincinnati location headers"""
+        print("Setting up requests session with Cincinnati location...")
+        self.session = requests.Session()
+        
+        # Cincinnati-specific headers
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0',
+            'DNT': '1',
+            'Sec-CH-UA': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            'Sec-CH-UA-Mobile': '?0',
+            'Sec-CH-UA-Platform': '"Windows"',
+            'sec-ch-ua-platform-version': '"10.0.0"',
+            'sec-ch-ua-arch': '"x86"',
+            'sec-ch-ua-model': '""',
+        }
+        
+        self.session.headers.update(headers)
+        self.session.timeout = 45
+        
+        # Set Cincinnati location cookies
+        self.session.cookies.set('storeId', self.cincinnati_store['store_id'], domain='.kroger.com')
+        self.session.cookies.set('zipCode', self.cincinnati_store['zip_code'], domain='.kroger.com')
+        
+        print("✅ Requests session configured with Cincinnati location")
     
     def _setup_selenium_like_local(self):
         """Setup Selenium to mimic local VSCode environment"""
@@ -229,19 +624,24 @@ class KrogerReviewAnalyzer:
             pass  # Ignore behavior simulation errors
     
     def search_products(self, category, max_products=10):
-        """Search with local development patterns"""
-        print(f"🔍 Searching for products: {category} (mimicking local environment)")
+        """Search with Cincinnati store location"""
+        print(f"🔍 Searching for products in Cincinnati: {category}")
         
+        # Include location in search URL
         search_url = f"https://www.kroger.com/search?query={quote_plus(category)}"
         
+        # Add store parameter if we have it
+        if hasattr(self, 'cincinnati_store'):
+            search_url += f"&storeId={self.cincinnati_store['store_id']}"
+        
         start_time = time.time()
-        max_search_time = 300  # 5 minutes like local development
+        max_search_time = 300  # 5 minutes
         
         try:
             if self.use_selenium:
-                result = self._search_with_local_selenium(search_url, max_products, start_time, max_search_time)
+                result = self._search_with_selenium_cincinnati(search_url, max_products, start_time, max_search_time)
             else:
-                result = self._search_with_local_requests(search_url, max_products, start_time, max_search_time)
+                result = self._search_with_requests_cincinnati(search_url, max_products, start_time, max_search_time)
             
             return result
             
@@ -249,6 +649,230 @@ class KrogerReviewAnalyzer:
             print(f"❌ Search failed: {e}")
             return []
     
+    def _search_with_selenium_cincinnati(self, search_url, max_products, start_time, max_time):
+
+        try:
+            print(f"Loading Cincinnati store search: {search_url}")
+            
+            if time.time() - start_time > max_time:
+                return []
+            
+            # Navigate to search with location
+            self.driver.get(search_url)
+            time.sleep(5)
+            
+            print(f"✅ Page loaded. Title: {self.driver.title[:50]}...")
+            
+            # Verify we're shopping Cincinnati (look for store info)
+            self._verify_cincinnati_location()
+            
+            # Continue with product search (using existing logic)
+            return self._search_products_on_page(max_products, start_time, max_time)
+            
+        except Exception as e:
+            print(f"❌ Cincinnati Selenium search failed: {e}")
+            return []
+    
+    def _search_products_on_page(self, max_products, start_time, max_time):
+        try:
+            self._mimic_local_behavior()
+            
+            # Look for products with patience
+            print("Looking for product elements...")
+            
+            local_selectors = [
+                'a[href*="/p/"]',
+                '[data-testid*="product"] a',
+                '.ProductCard a',
+                '.product-card a',
+                'a[aria-label*="product"]',
+                'a[href*="product"]',
+                '.kds-Link[href*="/p/"]',
+                'div[data-qa*="product"] a'
+            ]
+            
+            products_found = []
+            seen_urls = set()
+            
+            for selector in local_selectors:
+                if time.time() - start_time > max_time:
+                    break
+                
+                print(f"Trying selector: {selector}")              
+                
+                try:
+                    self._smart_scroll_local()
+                    
+                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    print(f"Found {len(elements)} elements with {selector}")
+                    
+                    if not elements:
+                        continue
+                    
+                    for element in elements[:max_products * 3]:
+                        try:
+                            href = element.get_attribute('href')
+                            if not href or href in seen_urls:
+                                continue
+                            
+                            if not self._is_valid_kroger_product_url(href):
+                                continue
+                            
+                            product_name = self._extract_product_name_local(element)
+                            if not product_name or len(product_name) < 5:
+                                continue
+                            
+                            full_url = href if href.startswith('http') else f"https://www.kroger.com{href}"
+                            
+                            products_found.append({
+                                'name': product_name,
+                                'url': full_url
+                            })
+                            seen_urls.add(href)
+                            print(f"✅ Found: {product_name}")
+                            
+                            if len(products_found) >= max_products:
+                                break
+                                
+                        except Exception as e:
+                            continue
+                
+                    if products_found:
+                        break
+                        
+                except Exception as e:
+                    print(f"Error with selector {selector}: {e}")
+                    continue
+            
+            return self._clean_product_list(products_found)
+            
+        except Exception as e:
+            print(f"❌ Product search on page failed: {e}")
+
+    def _verify_cincinnati_location(self):
+        """Verify we're shopping from Cincinnati location"""
+        try:
+            # Look for store location indicators
+            location_indicators = [
+                '.store-info',
+                '.selected-store',
+                '[data-testid*="store"]',
+                '.header-store'
+            ]
+            
+            for selector in location_indicators:
+                try:
+                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    for element in elements:
+                        text = element.text.lower()
+                        if 'cincinnati' in text or self.cincinnati_store['zip_code'] in text:
+                            print(f"✅ Confirmed Cincinnati location: {element.text[:50]}")
+                            return True
+                except:
+                    continue
+            
+            # Check page source for location indicators
+            page_source = self.driver.page_source.lower()
+            if 'cincinnati' in page_source or self.cincinnati_store['zip_code'] in page_source:
+                print("✅ Cincinnati location found in page source")
+                return True
+            
+            print("⚠️ Could not verify Cincinnati location")
+            return False
+            
+        except Exception as e:
+            print(f"⚠️ Location verification failed: {e}")
+            return False
+    
+    def _search_with_requests_cincinnati(self, search_url, max_products, start_time, max_time):
+        """Requests search with Cincinnati location headers"""
+        try:
+            print(f"Making Cincinnati store request: {search_url}")
+            
+            if time.time() - start_time > max_time:
+                return []
+            
+            # Add Cincinnati-specific headers
+            headers = {
+                'Referer': 'https://www.kroger.com/',
+                'Origin': 'https://www.kroger.com',
+                'X-Store-Id': self.cincinnati_store['store_id'],
+                'X-Zip-Code': self.cincinnati_store['zip_code']
+            }
+            
+            response = self.session.get(search_url, headers=headers, timeout=45)
+            response.raise_for_status()
+            
+            print(f"✅ Cincinnati response received: {response.status_code}, length: {len(response.text)}")
+            
+            # Verify Cincinnati location in response
+            if self.cincinnati_store['zip_code'] in response.text or 'cincinnati' in response.text.lower():
+                print("✅ Confirmed Cincinnati location in response")
+            
+            # Parse products from response
+            return self._parse_products_from_content(response.text, max_products)
+            
+        except Exception as e:
+            print(f"❌ Cincinnati requests search failed: {e}")
+            return []
+
+    def _parse_products_from_content(self, content, max_products):
+        try:
+            # Look for JSON data structures (common in modern sites)
+            json_patterns = [
+                r'"href":"([^"]*\/p\/[^"]*)"[^}]*?"name":"([^"]*)"',
+                r'"url":"([^"]*\/p\/[^"]*)"[^}]*?"title":"([^"]*)"',
+                r'"link":"([^"]*\/p\/[^"]*)"[^}]*?"productName":"([^"]*)"'
+            ]
+            
+            # Look for HTML patterns
+            html_patterns = [
+                r'<a[^>]+href="([^"]*\/p\/[^"]*)"[^>]*aria-label="([^"]*)"',
+                r'<a[^>]+href="([^"]*\/p\/[^"]*)"[^>]*title="([^"]*)"',
+                r'href="([^"]*\/p\/[^"]*)"[^>]*>([^<]+)</a>'
+            ]
+            
+            products_found = []
+            seen_urls = set()
+            
+            all_patterns = json_patterns + html_patterns
+            
+            for pattern in all_patterns:
+                matches = re.findall(pattern, content, re.DOTALL | re.IGNORECASE)
+                print(f"Pattern found {len(matches)} matches")
+                
+                for href, name in matches:
+                    if href in seen_urls or len(products_found) >= max_products:
+                        continue
+                    
+                    if not self._is_valid_kroger_product_url(href):
+                        continue
+                    
+                    # Clean up name
+                    clean_name = re.sub(r'<[^>]+>', '', name).strip()
+                    clean_name = re.sub(r'\s+', ' ', clean_name)
+                    clean_name = re.sub(r'[^\w\s\-\.,&()%]', '', clean_name)
+                    
+                    if not self._looks_like_product_name(clean_name):
+                        continue
+                    
+                    full_url = urljoin("https://www.kroger.com", href)
+                    products_found.append({
+                        'name': clean_name,
+                        'url': full_url
+                    })
+                    seen_urls.add(href)
+                    print(f"✅ Found: {clean_name}")
+                
+                if products_found:
+                    break
+            
+            return self._clean_product_list(products_found)
+            
+        except Exception as e:
+            print(f"❌ Content parsing failed: {e}")
+            return []
+
     def _search_with_local_selenium(self, search_url, max_products, start_time, max_time):
         """Selenium search mimicking local VSCode development"""
         try:
@@ -600,8 +1224,9 @@ class KrogerReviewAnalyzer:
     
     # Include all other methods from the previous analyzer
     def analyze_category_by_products(self, category, max_products=10, max_reviews_per_product=20):
-        """Main analysis method optimized for local-like behavior"""
-        print(f"🚀 Starting local-style analysis for '{category}'")
+        """Main analysis method optimized for Cincinnati location"""
+        print(f"🚀 Starting Cincinnati-based analysis for '{category}'")
+        print(f"🏪 Using store: {self.cincinnati_store['name']} (ID: {self.cincinnati_store['store_id']})")
         
         products = self.search_products(category, max_products)
         
@@ -612,7 +1237,6 @@ class KrogerReviewAnalyzer:
         print(f"✅ Found {len(products)} products")
         
         product_analyses = []
-        all_collected_reviews = set()
         
         for i, product in enumerate(products):
             print(f"📊 Processing product {i+1}/{len(products)}: {product['name']}")
@@ -650,8 +1274,10 @@ class KrogerReviewAnalyzer:
             'category': category,
             'summary': summary_analysis,
             'products': product_analyses,
-            'total_products_analyzed': len(product_analyses)
+            'total_products_analyzed': len(product_analyses),
+            'store_info': self.cincinnati_store
         }
+    
     
     # Include sentiment analysis and other helper methods from previous version
     def analyze_sentiment(self, reviews):
