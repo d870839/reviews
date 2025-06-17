@@ -1,18 +1,14 @@
 # Create a file called "render.yaml" in your project root:
 services:
   - type: web
-    name: kroger-analyzer
-    env: python
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "python app.py"
-    plan: free
-
-# Also modify the last few lines of your app.py file:
-if __name__ == '__main__':
-    # Get port from environment variable or default to 5000
-    port = int(os.environ.get('PORT', 5000))
-    # For production deployment
-    app.run(debug=False, host='0.0.0.0', port=port)
-
-# Create a file called "runtime.txt" (optional but recommended):
-python-3.11.6
+    name: kroger-analyzer-docker
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter  # Use paid plan for Docker support
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: PYTHONPATH
+        value: /app
+      - key: DISPLAY
+        value: :99
