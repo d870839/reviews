@@ -29,11 +29,11 @@ class KrogerReviewAnalyzer:
         # Cincinnati Kroger store information (multiple options)
         self.cincinnati_stores = {
             'downtown': {
-                'store_id': '01400513',  # Kroger On the Rhine
+                'store_id': '01400465',  # Oakley
                 'zip_code': '45202',
                 'city': 'Cincinnati',
                 'state': 'OH',
-                'name': 'Kroger On the Rhine'
+                'name': 'Oakley'
             },
             'green_township': {
                 'store_id': '01400444',  # Green Township
