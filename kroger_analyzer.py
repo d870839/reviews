@@ -90,8 +90,7 @@ class KrogerReviewAnalyzer:
             return True
         else:
             print(f"❌ Unknown store: {store_name}. Available: {list(self.cincinnati_stores.keys())}")
-            return False
-        """Setup Selenium with Cincinnati store location"""
+      
         try:
             print("Setting up Selenium with Cincinnati Kroger location...")
             
@@ -211,6 +210,7 @@ class KrogerReviewAnalyzer:
         except Exception as e:
             print(f"❌ Selenium setup failed: {e}")
             return False
+            
     
     def _set_cincinnati_store_location(self):
         """Navigate to Kroger and set Cincinnati store location"""
