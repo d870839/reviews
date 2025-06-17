@@ -81,6 +81,129 @@ class KrogerReviewAnalyzer:
                 self._setup_requests_with_location()
         else:
             self._setup_requests_with_location()
+
+
+    def _setup_selenium_with_location(self):
+
+        try:
+            print("Setting up Selenium with Cincinnati Kroger location...")
+            
+            chrome_options = Options()
+            
+            # Make it look like a real local Chrome instance
+            if self.headless:
+                chrome_options.add_argument('--headless=new')
+            
+            # Core options for Docker compatibility
+            chrome_options.add_argument('--no-sandbox')
+            chrome_options.add_argument('--disable-dev-shm-usage')
+            
+            # CRITICAL: Remove automation indicators
+            chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            chrome_options.add_experimental_option('useAutomationExtension', False)
+            
+            # Mimic real local browser
+            chrome_options.add_argument('--disable-web-security')
+            chrome_options.add_argument('--allow-running-insecure-content')
+            chrome_options.add_argument('--disable-features=TranslateUI,BlinkGenPropertyTrees')
+            chrome_options.add_argument('--disable-ipc-flooding-protection')
+            
+            # Set Cincinnati location in browser (geolocation override)
+            # Cincinnati coordinates: 39.1031, -84.5120
+            chrome_options.add_argument('--enable-features=GeolocationAPI')
+            
+            # Local browser window size
+            chrome_options.add_argument('--window-size=1920,1080')
+            chrome_options.add_argument('--start-maximized')
+            
+            # Real user agent
+            local_ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            chrome_options.add_argument(f'--user-agent={local_ua}')
+            
+            # Mimic local Chrome profile preferences with Cincinnati location
+            prefs = {
+                "profile.default_content_setting_values": {
+                    "notifications": 1,
+                    "popups": 0,
+                    "geolocation": 1,    # Allow location for Cincinnati
+                    "media_stream": 1,
+                },
+                "profile.managed_default_content_settings": {
+                    "images": 1
+                },
+                "intl.accept_languages": "en-US,en",
+                "profile.default_content_settings.popups": 0,
+                "extensions.settings": {},
+                # Set Cincinnati timezone
+                "profile.content_settings.exceptions.automatic_downloads": {
+                    "*,*": {"last_modified": "13000000000000000", "setting": 1}
+                }
+            }
+            chrome_options.add_experimental_option("prefs", prefs)
+            
+            # Additional browser flags
+            chrome_options.add_argument('--disable-background-networking')
+            chrome_options.add_argument('--enable-features=NetworkService,NetworkServiceLogging')
+            chrome_options.add_argument('--disable-background-timer-throttling')
+            chrome_options.add_argument('--disable-renderer-backgrounding')
+            chrome_options.add_argument('--disable-backgrounding-occluded-windows')
+            chrome_options.add_argument('--disable-client-side-phishing-detection')
+            chrome_options.add_argument('--disable-crash-reporter')
+            chrome_options.add_argument('--disable-oopr-debug-crash-dump')
+            chrome_options.add_argument('--no-crash-upload')
+            chrome_options.add_argument('--disable-low-res-tiling')
+            chrome_options.add_argument('--log-level=3')
+            chrome_options.add_argument('--silent')
+            
+            # Set Chrome binary location for Docker
+            chrome_options.binary_location = "/usr/bin/google-chrome"
+            
+            # Create service
+            service = Service(executable_path="/usr/local/bin/chromedriver")
+            
+            # Initialize driver
+            self.driver = webdriver.Chrome(service=service, options=chrome_options)
+            
+            # CRITICAL: Hide webdriver property immediately
+            self.driver.execute_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined,
+                });
+            """)
+            
+            # Set Cincinnati geolocation
+            self.driver.execute_cdp_cmd("Emulation.setGeolocationOverride", {
+                "latitude": 39.1031,
+                "longitude": -84.5120,
+                "accuracy": 100
+            })
+            
+            # Add more realistic navigator properties
+            self.driver.execute_script("""
+                Object.defineProperty(navigator, 'languages', {
+                    get: () => ['en-US', 'en'],
+                });
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [1, 2, 3, 4, 5], // Fake plugins array
+                });
+            """)
+            
+            # Set realistic timeouts
+            self.driver.set_page_load_timeout(90)
+            self.driver.implicitly_wait(20)
+            
+            # Now set the Cincinnati store location
+            success = self._set_cincinnati_store_location()
+            if not success:
+                print("⚠️ Warning: Could not set Cincinnati store location, proceeding anyway")
+            
+            print("✅ Selenium configured with Cincinnati location")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Selenium setup failed: {e}")
+            return False
     
     def set_cincinnati_store(self, store_name='downtown'):
         """Set specific Cincinnati store location"""
