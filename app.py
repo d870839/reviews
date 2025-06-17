@@ -9,6 +9,7 @@ import uuid
 from werkzeug.utils import secure_filename
 import traceback
 import logging
+import signal
 
 # Import your analyzer class
 from kroger_analyzer import KrogerReviewAnalyzer
@@ -34,9 +35,10 @@ class AnalysisJob:
         self.status = 'starting'
         self.progress = 0
         self.result_file = None
-        self.analysis_data = None  # Store the raw analysis data
+        self.analysis_data = None
         self.error_message = None
         self.created_at = datetime.now()
+        self.thread = None  # Track the thread
         logger.info(f"Created job {job_id} for category '{category}'")
         
     def update_status(self, status, progress=None, error=None, result_file=None, analysis_data=None):
@@ -52,6 +54,30 @@ class AnalysisJob:
         if analysis_data:
             self.analysis_data = analysis_data
 
+def run_analysis_with_timeout(job_id, category, max_products, max_reviews):
+    """Run analysis with timeout protection"""
+    def timeout_handler(signum, frame):
+        logger.error(f"Job {job_id} timed out after 15 minutes")
+        job = analysis_jobs.get(job_id)
+        if job:
+            job.update_status('error', error="Analysis timed out. This may be due to website blocking or server limitations.")
+        raise TimeoutError("Analysis timed out")
+    
+    # Set 15-minute timeout for entire analysis
+    if hasattr(signal, 'SIGALRM'):
+        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(900)  # 15 minutes
+    
+    try:
+        run_analysis(job_id, category, max_products, max_reviews)
+    except TimeoutError:
+        logger.error(f"Job {job_id} exceeded timeout")
+    except Exception as e:
+        logger.error(f"Job {job_id} failed: {e}")
+    finally:
+        if hasattr(signal, 'SIGALRM'):
+            signal.alarm(0)  # Cancel timeout
+
 def run_analysis(job_id, category, max_products, max_reviews):
     """Run the analysis in a background thread"""
     logger.info(f"Starting analysis thread for job {job_id}")
@@ -64,24 +90,37 @@ def run_analysis(job_id, category, max_products, max_reviews):
     try:
         job.update_status('initializing', 5)
         
-        # Initialize analyzer
+        # Initialize analyzer with fallback strategy
         logger.info(f"Initializing analyzer for job {job_id}")
-        analyzer = KrogerReviewAnalyzer(use_selenium=True, headless=True)
+        
+        # Try Selenium first, but with timeout protection
+        try:
+            analyzer = KrogerReviewAnalyzer(use_selenium=True, headless=True)
+            logger.info("✅ Analyzer initialized with Selenium")
+        except Exception as e:
+            logger.warning(f"Selenium failed, using requests-only mode: {e}")
+            analyzer = KrogerReviewAnalyzer(use_selenium=False, headless=True)
         
         job.update_status('searching', 15)
         logger.info(f"Starting product search for '{category}'")
         
-        # Run analysis
-        analysis = analyzer.analyze_category_by_products(
-            category=category,
-            max_products=max_products,
-            max_reviews_per_product=max_reviews
-        )
-        
-        logger.info(f"Analysis completed for job {job_id}. Result: {analysis is not None}")
-        
-        if not analysis:
-            job.update_status('error', error="No products found for this category")
+        # Run analysis with progress tracking
+        try:
+            analysis = analyzer.analyze_category_by_products(
+                category=category,
+                max_products=max_products,
+                max_reviews_per_product=max_reviews
+            )
+            
+            logger.info(f"Analysis completed for job {job_id}. Result: {analysis is not None}")
+            
+            if not analysis:
+                job.update_status('error', error="No products found for this category. This could be due to website restrictions or the category not existing.")
+                return
+            
+        except Exception as e:
+            logger.error(f"Analysis execution failed: {e}")
+            job.update_status('error', error=f"Analysis failed: {str(e)}")
             return
             
         job.update_status('analyzing', 70)
@@ -98,16 +137,25 @@ def run_analysis(job_id, category, max_products, max_reviews):
         
         # Export to Excel
         job.update_status('exporting', 85)
-        result_file = analyzer.export_products_to_spreadsheet(analysis, filepath)
-        
-        if result_file and os.path.exists(result_file):
-            job.update_status('completed', 100, result_file=result_file, analysis_data=analysis)
-            logger.info(f"Job {job_id} completed successfully. File: {result_file}")
-        else:
-            job.update_status('error', error="Failed to create Excel file")
+        try:
+            result_file = analyzer.export_products_to_spreadsheet(analysis, filepath)
+            
+            if result_file and os.path.exists(result_file):
+                job.update_status('completed', 100, result_file=result_file, analysis_data=analysis)
+                logger.info(f"Job {job_id} completed successfully. File: {result_file}")
+            else:
+                job.update_status('error', error="Failed to create Excel file")
+        except Exception as e:
+            logger.error(f"Excel export failed: {e}")
+            # Still mark as completed if we have analysis data
+            job.update_status('completed', 100, analysis_data=analysis)
+            logger.info(f"Job {job_id} completed (analysis only, Excel export failed)")
         
         # Clean up
-        del analyzer
+        try:
+            del analyzer
+        except:
+            pass
         
     except Exception as e:
         error_msg = f"Analysis failed: {str(e)}"
@@ -138,13 +186,11 @@ def dashboard_with_job(job_id):
 def get_dashboard_data():
     """API endpoint to get all dashboard data"""
     try:
-        # Get all completed analyses
         all_reviews = []
         
         for job_id, analysis_data in analysis_results.items():
             if analysis_data and 'products' in analysis_data:
                 for product in analysis_data['products']:
-                    # Extract all reviews from sample_reviews
                     sample_reviews = product.get('sample_reviews', {})
                     
                     for sentiment_type in ['positive', 'negative', 'neutral']:
@@ -162,7 +208,6 @@ def get_dashboard_data():
                                 'sentiment_category': sentiment_type
                             }
                             
-                            # Add datetime if missing (use current time as fallback)
                             if not review_entry['datetime']:
                                 review_entry['datetime'] = datetime.now().isoformat()
                             
@@ -203,7 +248,6 @@ def get_job_dashboard_data(job_id):
                             'sentiment_category': sentiment_type
                         }
                         
-                        # Add datetime if missing
                         if not review_entry['datetime']:
                             review_entry['datetime'] = datetime.now().isoformat()
                         
@@ -218,11 +262,11 @@ def get_job_dashboard_data(job_id):
 def _calculate_sentiment_score(sentiment_type):
     """Convert sentiment category to approximate score"""
     if sentiment_type == 'positive':
-        return 0.5  # Positive sentiment
+        return 0.5
     elif sentiment_type == 'negative':
-        return -0.5  # Negative sentiment
+        return -0.5
     else:
-        return 0.0   # Neutral sentiment
+        return 0.0
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
@@ -246,6 +290,15 @@ def analyze():
             flash('Max reviews must be between 1 and 50', 'error')
             return redirect(url_for('index'))
         
+        # Limit resources for cloud deployment
+        if max_products > 10:
+            max_products = 10
+            flash('Max products limited to 10 for cloud deployment', 'warning')
+            
+        if max_reviews > 20:
+            max_reviews = 20
+            flash('Max reviews limited to 20 for cloud deployment', 'warning')
+        
         # Create new job
         job_id = str(uuid.uuid4())
         job = AnalysisJob(job_id, category, max_products, max_reviews)
@@ -253,10 +306,11 @@ def analyze():
         
         logger.info(f"Created job {job_id}, starting background thread")
         
-        # Start analysis in background thread
-        thread = threading.Thread(target=run_analysis, args=(job_id, category, max_products, max_reviews))
+        # Start analysis in background thread with timeout protection
+        thread = threading.Thread(target=run_analysis_with_timeout, args=(job_id, category, max_products, max_reviews))
         thread.daemon = True
         thread.start()
+        job.thread = thread
         
         logger.info(f"Background thread started for job {job_id}")
         
@@ -281,13 +335,20 @@ def get_status(job_id):
         logger.warning(f"Job {job_id} not found in analysis_jobs. Available jobs: {list(analysis_jobs.keys())}")
         return jsonify({'error': 'Job not found'}), 404
     
+    # Check if job has been running too long without progress
+    time_running = (datetime.now() - job.created_at).total_seconds()
+    if time_running > 900 and job.status in ['searching', 'initializing']:  # 15 minutes
+        logger.warning(f"Job {job_id} appears stuck, marking as error")
+        job.update_status('error', error="Analysis timed out. The website may be blocking automated requests.")
+    
     response_data = {
         'status': job.status,
         'progress': job.progress,
         'error': job.error_message,
         'category': job.category,
         'has_result': job.result_file is not None,
-        'has_dashboard_data': job.analysis_data is not None
+        'has_dashboard_data': job.analysis_data is not None,
+        'running_time': int(time_running)
     }
     
     logger.info(f"Job {job_id} status: {response_data}")
@@ -323,6 +384,23 @@ def download_result(job_id):
         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     )
 
+@app.route('/cancel/<job_id>', methods=['POST'])
+def cancel_job(job_id):
+    """Cancel a running job"""
+    logger.info(f"Cancel request for job {job_id}")
+    job = analysis_jobs.get(job_id)
+    if not job:
+        return jsonify({'error': 'Job not found'}), 404
+    
+    if job.status in ['completed', 'error']:
+        return jsonify({'message': 'Job already finished'})
+    
+    # Mark job as cancelled
+    job.update_status('error', error="Job cancelled by user")
+    logger.info(f"Job {job_id} cancelled by user")
+    
+    return jsonify({'message': 'Job cancelled successfully'})
+
 @app.route('/cleanup')
 def cleanup_old_jobs():
     """Clean up old jobs (call this periodically)"""
@@ -330,13 +408,12 @@ def cleanup_old_jobs():
     jobs_to_remove = []
     
     for job_id, job in analysis_jobs.items():
-        # Remove jobs older than 1 hour
-        if (current_time - job.created_at).total_seconds() > 3600:
+        # Remove jobs older than 2 hours
+        if (current_time - job.created_at).total_seconds() > 7200:
             # Clean up file if it exists
             if job.result_file and os.path.exists(job.result_file):
                 try:
                     os.remove(job.result_file)
-                    # Try to remove the temp directory too
                     temp_dir = os.path.dirname(job.result_file)
                     if os.path.exists(temp_dir):
                         os.rmdir(temp_dir)
@@ -360,12 +437,14 @@ def debug_jobs():
     """Debug endpoint to see all jobs"""
     jobs_info = {}
     for job_id, job in analysis_jobs.items():
+        running_time = (datetime.now() - job.created_at).total_seconds()
         jobs_info[job_id] = {
             'category': job.category,
             'status': job.status,
             'progress': job.progress,
             'error': job.error_message,
             'created_at': job.created_at.isoformat(),
+            'running_time_seconds': int(running_time),
             'has_file': job.result_file is not None,
             'has_analysis_data': job.analysis_data is not None
         }
@@ -387,6 +466,35 @@ def debug_analysis_results():
             results_info[job_id] = {'error': 'No analysis data'}
     
     return jsonify(results_info)
+
+@app.route('/test-analyzer')
+def test_analyzer():
+    """Test endpoint to verify analyzer functionality"""
+    try:
+        logger.info("Testing analyzer initialization...")
+        
+        # Test with requests-only mode first
+        analyzer = KrogerReviewAnalyzer(use_selenium=False, headless=True)
+        logger.info("✅ Requests-only analyzer initialized")
+        
+        # Test with Selenium
+        try:
+            selenium_analyzer = KrogerReviewAnalyzer(use_selenium=True, headless=True)
+            logger.info("✅ Selenium analyzer initialized")
+            selenium_working = True
+        except Exception as e:
+            logger.warning(f"❌ Selenium analyzer failed: {e}")
+            selenium_working = False
+        
+        return jsonify({
+            'requests_analyzer': 'working',
+            'selenium_analyzer': 'working' if selenium_working else 'failed',
+            'timestamp': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Test failed: {e}")
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     # Get port from environment variable or default to 5000
