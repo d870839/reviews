@@ -1011,6 +1011,9 @@ class KrogerReviewAnalyzer:
             # Wait for page like local (developers are patient)
             time.sleep(5)  # Longer initial wait
             
+#test hello
+
+
             print(f"✅ Page loaded in local-style. Title: {self.driver.title[:50]}...")
             
             # Mimic local developer behavior
